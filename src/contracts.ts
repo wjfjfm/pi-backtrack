@@ -1,5 +1,6 @@
 /** Design contracts only; no host integration or tool registration yet. */
-export type CheckpointId = `cp-${number}`;
+/** Non-negative safe integer, allocated monotonically within a session. */
+export type CheckpointId = number;
 
 export interface ContextStatus {
   usedTokens: number | null;

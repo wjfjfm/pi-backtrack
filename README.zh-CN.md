@@ -21,14 +21,14 @@ Agent-controlled context backtracking with checkpoints and handoffs.
 Host 在第一次模型生成前、以及每个完整工具批次结束后的下一次生成前，自动建立 checkpoint，并追加模型可见的状态标记：
 
 ```text
-[checkpoint: cp-20 | ctx: ~100K/300K | 33%]
+[checkpoint: 20 | ctx: ~100K/300K | 33%]
 ```
 
 Agent 判断一段探索已经完成或方向错误后，调用一个工具（拟定名）：
 
 ```js
 backtrack({
-  checkpoint: "cp-20",
+  checkpoint: 20,
   summary: "已排除数据库问题。诊断日志已写入，尚未提交。下一步检查 retry.ts 的重试循环。"
 })
 ```
@@ -36,7 +36,7 @@ backtrack({
 Host 保留目标之前的历史，以交接摘要替换目标之后的当前后缀，然后自动续跑。原始后缀保留用于恢复。
 
 ```text
-之前：前缀 → cp-20 → 大量探索 → backtrack 调用
+之前：前缀 → 20 → 大量探索 → backtrack 调用
 之后：前缀 → 交接摘要 → 新 checkpoint → 继续执行
 ```
 

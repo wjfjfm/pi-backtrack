@@ -21,14 +21,14 @@ Initial scaffold. This repository contains a design and draft TypeScript interfa
 Before the first model generation, and before the next generation after each completed tool batch, the host automatically creates a checkpoint and appends a model-visible status marker:
 
 ```text
-[checkpoint: cp-20 | ctx: ~100K/300K | 33%]
+[checkpoint: 20 | ctx: ~100K/300K | 33%]
 ```
 
 Once the agent decides an exploration is complete or has taken the wrong direction, it calls a tool (proposed name):
 
 ```js
 backtrack({
-  checkpoint: "cp-20",
+  checkpoint: 20,
   summary: "Database issues ruled out. Diagnostic logging has been added but not committed. Next, inspect the retry loop in retry.ts."
 })
 ```
@@ -36,7 +36,7 @@ backtrack({
 The host keeps the history before the target, replaces the active suffix after it with the handoff, and automatically resumes execution. The original suffix remains available for recovery.
 
 ```text
-Before: prefix → cp-20 → extensive exploration → backtrack call
+Before: prefix → 20 → extensive exploration → backtrack call
 After:  prefix → handoff → new checkpoint → continued execution
 ```
 
