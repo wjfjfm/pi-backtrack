@@ -15,12 +15,24 @@
 - 只允许回到当前路径上仍然有效的祖先 checkpoint；原生 compaction、分支切换等导致目标失效时明确拒绝。
 - `20` 的 token 数是当时的快照，不代表回退后精确占用，后者还包括新摘要等内容。
 
+## 工具参数与知识条目
+
+`backtrack({ checkpoint, description, knowledge, message })`：四个字段必填，checkpoint 为非负安全整数，其余字段为非空白文本。
+
+- description：知识的内容与用途，条目折叠后仍可见。
+- knowledge：实际知识正文，本次 backtrack 后完整展开。
+- message：仅追加到本次回退后的上下文，用于续跑，不存入知识条目。
+
+每次 backtrack 收起旧知识条目和此前按需读取的副本，保留它们的 description；展开本次新条目。计划中的读取工具返回完整 knowledge，不返回 message；读取本身不触发其他条目折叠。
+
+Tool Description 与字段指导文案集中在 `src/tool-description.ts`，当前为占位文本，另行完善。此处是设计约定，存储、投影与读取尚未实现。
+
 ## Backtrack 事务
 
-1. 校验目标、摘要及工具批次独占条件。
+1. 校验目标、description、knowledge、message 及工具批次独占条件。
 2. 记录调用时的分支位置，等待当前批次安全结束。
 3. 检查是否收到新的用户输入或发生分支推进；若存在竞态，取消操作并说明原因。
-4. 保留原文及恢复地址，在目标边界建立携带摘要的继续分支。
+4. 保留原文及恢复地址，在目标边界建立继续分支，收起旧知识，展开本次知识并单独追加 message。
 5. 同步宿主实际发送给模型的上下文，而不只是修改会话存储。
 6. 建立新的 checkpoint，触发继续执行。
 

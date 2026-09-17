@@ -29,15 +29,17 @@ Once the agent decides an exploration is complete or has taken the wrong directi
 ```js
 backtrack({
   checkpoint: 20,
-  summary: "Database issues ruled out. Diagnostic logging has been added but not committed. Next, inspect the retry loop in retry.ts."
+  description: "Database investigation findings and evidence for later review.",
+  knowledge: "Database issues ruled out. Diagnostic logging has been added but not committed.",
+  message: "Inspect the retry loop in retry.ts."
 })
 ```
 
-The host keeps the history before the target, replaces the active suffix after it with the handoff, and automatically resumes execution. The original suffix remains available for recovery.
+The host keeps the history before the target and replaces the active suffix with a knowledge entry. The new entry is expanded; older entries collapse to their descriptions. The separate `message` is appended to the continuation context, not stored in the knowledge entry. The original suffix remains available for recovery.
 
 ```text
 Before: prefix → 20 → extensive exploration → backtrack call
-After:  prefix → handoff → new checkpoint → continued execution
+After:  prefix (older knowledge collapsed) → new knowledge expanded → message → new checkpoint → continued execution
 ```
 
 A single user input can drive many tool rounds. No further user input or advance checkpoint call by the agent is required.
@@ -48,6 +50,7 @@ A single user input can drive many tool rounds. No further user input or advance
 - Backtrack must be the only tool call in its batch. The host enforces this constraint rather than relying on prompting alone.
 - Only context is rewound. Files, processes, and external actions are not rolled back; the handoff must account for their state.
 - The current agent writes the summary, with no separate summarizer request.
+- Knowledge entries store `description` and `knowledge`. On-demand reading is planned; the next backtrack will collapse older entries and their read copies again. The continuation `message` is not returned when reading an entry.
 - Existing markers stay unchanged to preserve the prefix. Backtracking can still invalidate cached content after the target.
 - Inexact usage is explicitly marked as an estimate. UI readings or previous-request usage must not be presented as exact current occupancy.
 - The first version handles suffix backtracking only. Arbitrary range compression, history search, and recovery tools are left for later design.
