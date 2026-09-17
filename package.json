@@ -1,0 +1,13 @@
+{
+  "name": "pi-backtrack",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Agent-controlled context backtracking with checkpoints and handoffs for Pi (design scaffold)",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}
