@@ -14,7 +14,7 @@ Agent-controlled context backtracking with checkpoints and handoffs.
 
 ## 状态
 
-项目初始化阶段。当前包含设计与 TypeScript 接口草案，尚未实现或注册 Pi 扩展，不是可安装使用的插件。
+已实现 Pi 扩展入口与 `backtrack` 工具注册。checkpoint 注入和实际回退逻辑尚未实现；当前调用工具会明确返回错误，不改变上下文。
 
 ## 核心交互
 
@@ -24,7 +24,7 @@ Host 在第一次模型生成前、以及每个完整工具批次结束后的下
 [checkpoint 20 | context 100K/300K 33%]
 ```
 
-Agent 判断一段探索已经完成或方向错误后，调用一个工具（拟定名）：
+Agent 判断一段探索已经完成或方向错误后，调用：
 
 ```js
 backtrack({
@@ -61,4 +61,10 @@ npm install
 npm run typecheck
 ```
 
-当前未固定 Pi SDK 版本；先验证本地 Pi 的事件顺序、分支切换与自动续跑接口，再接入宿主。
+开发基于 Pi SDK 0.85.1。本地加载扩展：
+
+```sh
+pi -e ./src/index.ts
+```
+
+加载后仅注册工具，尚不能执行上下文回退。

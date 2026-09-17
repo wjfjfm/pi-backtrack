@@ -1,4 +1,6 @@
-/** Design contracts only; no host integration or tool registration yet. */
+/** Runtime contracts for the upcoming checkpoint and backtracking implementation. */
+export type { BacktrackArguments } from "./index.js";
+
 /** Non-negative safe integer, allocated monotonically within a session. */
 export type CheckpointId = number;
 
@@ -14,10 +16,4 @@ export interface Checkpoint {
   sessionId: string;
   boundaryEntryId: string;
   status: ContextStatus;
-}
-
-export interface BacktrackArguments {
-  checkpoint: CheckpointId;
-  /** Current goal, conclusions, external effects, validation and next action. */
-  summary: string;
 }

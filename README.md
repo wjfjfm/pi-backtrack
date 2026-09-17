@@ -14,7 +14,7 @@ Let an agent fold away exploration it has already processed, return to an earlie
 
 ## Status
 
-Initial scaffold. This repository contains a design and draft TypeScript interfaces. The Pi extension has not been implemented or registered yet; this is not a usable plugin.
+The Pi extension entry point and `backtrack` tool registration are implemented. Checkpoint injection and backtracking execution are still pending. Tool calls currently return an explicit error without changing context.
 
 ## Planned interaction
 
@@ -24,7 +24,7 @@ Before the first model generation, and before the next generation after each com
 [checkpoint 20 | context 100K/300K 33%]
 ```
 
-Once the agent decides an exploration is complete or has taken the wrong direction, it calls a tool (proposed name):
+Once the agent decides an exploration is complete or has taken the wrong direction, it calls:
 
 ```js
 backtrack({
@@ -61,4 +61,10 @@ npm install
 npm run typecheck
 ```
 
-The Pi SDK version is not pinned yet. Host integration will follow verification of Pi's event ordering, branch navigation, and automatic continuation APIs.
+Development targets Pi SDK 0.85.1. To load the extension locally:
+
+```sh
+pi -e ./src/index.ts
+```
+
+Loading registers the tool only; it does not yet enable context backtracking.
