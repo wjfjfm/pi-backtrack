@@ -21,7 +21,7 @@ Initial scaffold. This repository contains a design and draft TypeScript interfa
 Before the first model generation, and before the next generation after each completed tool batch, the host automatically creates a checkpoint and appends a model-visible status marker:
 
 ```text
-[checkpoint 20 | ctx 100K/300K | 33%]
+[checkpoint 20 | ctx 100K/300K 33%]
 ```
 
 Once the agent decides an exploration is complete or has taken the wrong direction, it calls a tool (proposed name):
