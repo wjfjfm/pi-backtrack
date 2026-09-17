@@ -21,7 +21,7 @@ Agent-controlled context backtracking with checkpoints and handoffs.
 Host 在第一次模型生成前、以及每个完整工具批次结束后的下一次生成前，自动建立 checkpoint，并追加模型可见的状态标记：
 
 ```text
-[checkpoint 20 | ctx 100K/300K 33%]
+[checkpoint 20 | context 100K/300K 33%]
 ```
 
 Agent 判断一段探索已经完成或方向错误后，调用一个工具（拟定名）：
