@@ -23,16 +23,16 @@
 - knowledge：实际知识正文，本次 backtrack 后完整展开。
 - message：仅追加到本次回退后的上下文，用于续跑，不存入知识条目。
 
-每次 backtrack 收起旧知识条目和此前按需读取的副本，保留它们的 description；展开本次新条目。计划中的读取工具返回完整 knowledge，不返回 message；读取本身不触发其他条目折叠。
+每次 backtrack 收起旧知识条目和此前按需读取的副本，保留它们的 description；展开本次新条目。knowledge 通过 `pi-dynamic-skill` 保存为会话旁的 `SKILL.md`，description 写入 frontmatter；普通 `read` 返回文件内容，不返回 message，不增加读取工具。读取本身不触发其他条目折叠。
 
-Tool Description 与字段指导文案集中在 `src/tool-description.ts`，当前为占位文本，另行完善。此处是设计约定，存储、投影与读取尚未实现。
+Tool Description 与字段指导文案集中在 `src/tool-description.ts`，当前为占位文本，另行完善。文件存储和目录 reload 接口已实现并通过普通包依赖接入；回退工具尚未调用存储适配层，活动上下文投影仍待实现。
 
 ## Backtrack 事务
 
 1. 校验目标、description、knowledge、message 及工具批次独占条件。
 2. 记录调用时的分支位置，等待当前批次安全结束。
 3. 检查是否收到新的用户输入或发生分支推进；若存在竞态，取消操作并说明原因。
-4. 保留原文及恢复地址，在目标边界建立继续分支，收起旧知识，展开本次知识并单独追加 message。
+4. 保留原文及恢复地址，在目标边界建立继续分支；将区间内 user/assistant 正文按顺序合并为对话记录块，移出 thinking、toolcall 和 toolresult。通过记忆适配层保存本次知识，收起旧知识，展开本次知识并单独追加 message。
 5. 同步宿主实际发送给模型的上下文，而不只是修改会话存储。
 6. 建立新的 checkpoint，触发继续执行。
 
@@ -48,7 +48,7 @@ Tool Description 与字段指导文案集中在 `src/tool-description.ts`，当�
 - Agent 无需额外用户输入即可调用 backtrack 并续跑。
 - tool call/result 不被拆开；并列 backtrack 与普通工具时拒绝回退。
 - 重复调用、无效编号、恢复会话与原生 compaction 不产生地址混淆。
-- 折叠后的实际模型请求符合预期：保留前缀和摘要，移出原始后缀。
+- 折叠后的实际模型请求符合预期：保留前缀、对话记录块和本次知识，移出原始执行过程。
 - 归档保留完整原文，文件及外部操作不被回滚。
 
 ## 后续问题

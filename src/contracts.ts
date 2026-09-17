@@ -1,4 +1,5 @@
 /** Runtime contracts for the upcoming checkpoint and backtracking implementation. */
+import type { SkillReference } from "pi-dynamic-skill";
 export type { BacktrackArguments } from "./schema.js";
 
 /** Non-negative safe integer, allocated monotonically within a session. */
@@ -18,16 +19,13 @@ export interface Checkpoint {
   status: ContextStatus;
 }
 
-/** Stored knowledge excludes the one-time continuation message. */
-export interface KnowledgeEntry {
-  id: number;
+/** Session index stores a skill reference, not its body or continuation message. */
+export interface KnowledgeEntry extends SkillReference {
   sessionId: string;
   checkpoint: CheckpointId;
-  description: string;
-  knowledge: string;
 }
 
 /** Model-visible view; collapsed entries expose only their description. */
 export type KnowledgeView =
-  | { id: number; description: string; expanded: false }
-  | { id: number; description: string; expanded: true; knowledge: string };
+  | (SkillReference & { expanded: false })
+  | (SkillReference & { expanded: true; knowledge: string });

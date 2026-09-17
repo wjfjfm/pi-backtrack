@@ -14,7 +14,7 @@ Agent-controlled context backtracking with checkpoints and handoffs.
 
 ## 状态
 
-已实现 Pi 扩展入口与 `backtrack` 工具注册。checkpoint 注入和实际回退逻辑尚未实现；当前调用工具会明确返回错误，不改变上下文。
+已实现 Pi 扩展入口与 `backtrack` 工具注册。记忆适配层已通过普通包依赖调用 `pi-dynamic-skill`，生成会话级 skill 文件。checkpoint 注入和实际回退逻辑尚未实现，工具也尚未调用记忆适配层；当前调用工具会明确返回错误，不改变上下文。
 
 ## 核心交互
 
@@ -35,11 +35,11 @@ backtrack({
 })
 ```
 
-Host 保留目标之前的历史，以知识条目替换目标之后的当前后缀。本次条目完整展开，旧条目折叠为 description。独立的 message 追加到续跑上下文，不存入知识条目。原始后缀保留用于恢复。
+计划中的 Host 行为是保留目标之前的历史，将后缀中的 user/assistant 对话正文按顺序合并为文本记录，thinking、toolcall、toolresult 则折叠为文件中的知识。本次条目完整展开，旧条目折叠为 description。独立的 message 追加到续跑上下文，不存入知识条目。原始后缀保留用于恢复。
 
 ```text
 之前：前缀 → 20 → 大量探索 → backtrack 调用
-之后：前缀（旧知识折叠）→ 本次知识展开 → message → 新 checkpoint → 继续执行
+之后：前缀（旧知识折叠）→ 对话记录块 → 本次知识展开 → message → 新 checkpoint → 继续执行
 ```
 
 一次用户输入可以触发任意多轮工具交互，不需要用户再次输入，也不需要 Agent 提前调用 checkpoint 工具。
@@ -50,21 +50,34 @@ Host 保留目标之前的历史，以知识条目替换目标之后的当前后
 - backtrack 必须独占工具批次；Host 强制校验，不能只依赖提示词。
 - 只回退上下文，不回滚文件、进程或外部操作；摘要必须交代这些状态。
 - 摘要由当前 Agent 撰写，不额外调用模型归纳。
-- 知识条目保存 description 和 knowledge，计划支持按需读取；下次 backtrack 时统一收起旧条目及其读取副本。读取条目时不返回续跑 message。
+- 知识保存为 `SKILL.md`：description 位于 frontmatter，knowledge 位于正文。通过普通 `read` 按需读取，不增加专用知识读取工具；下次 backtrack 时统一收起旧条目及其读取副本。读取条目时不返回续跑 message。
 - 旧标记不更新，保持原有前缀稳定；实际回退仍可能导致目标位置之后的缓存失效。
 - 占用不精确时明确标记估算，不把 UI 数据或上一轮 usage 冒充当前精确容量。
 - 初版只处理后缀回退；区间压缩、历史检索与恢复工具留待后续设计。
 
 实现约束与待验证问题见 [设计说明](docs/design.md)。
 
+## 记忆依赖
+
+`pi-dynamic-skill` 作为固定提交的 Git 依赖自动安装，无需单独安装扩展或使用事件总线。`src/memory.ts` 提供 `createBacktrackMemory(sessionFile, args)`，供后续回退事务调用；仅保存 description 和 knowledge，不保存续跑 message。
+
+```text
+<sessionDir>/
+  <sessionFileStem>.jsonl
+  <sessionFileStem>/skills/backtrack-<datetime>/SKILL.md
+```
+
+名称使用精确到毫秒的本地时间，重名时追加数字后缀。会话索引可以保存轻量 skill 引用，不在 JSONL 中重复保存正文。迁移会话时需同时携带配套目录。运行时注入、替换及 fork 处理仍待实现。
+
 ## 开发
 
 ```sh
 npm install
 npm run typecheck
+npm test
 ```
 
-开发基于 Pi SDK 0.85.1。本地加载扩展：
+开发基于 Pi SDK 0.85.1；测试使用 Node.js 22.18+ 或 24+ 的原生 TypeScript 加载能力。本地加载扩展：
 
 ```sh
 pi -e ./src/index.ts

@@ -12,9 +12,14 @@
     "@earendil-works/pi-coding-agent": "^0.85.1"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "pi-dynamic-skill": "git+https://github.com/wjfjfm/pi-dynamic-skill.git#19dacb4bbbd2460298b14df87ff3815e0c26d768"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "@earendil-works/pi-ai": "0.85.1",
     "@earendil-works/pi-coding-agent": "0.85.1",
     "typescript": "5.9.3"
