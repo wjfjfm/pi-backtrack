@@ -42,10 +42,13 @@ backtrack({
 
 Requires a Pi 0.85.1-compatible environment. Node.js 22.19+ or 24+ is recommended.
 
+```sh
+pi install git:github.com/wjfjfm/pi-backtrack
+```
+
 Backtrack works independently, but [pi-dynamic-skill](https://github.com/wjfjfm/pi-dynamic-skill) is recommended for long-term memory. Before backtracking, the agent autonomously uses dynamic-skill to save useful knowledge from the context about to be folded away.
 
 ```sh
-pi install git:github.com/wjfjfm/pi-backtrack
 pi install git:github.com/wjfjfm/pi-dynamic-skill
 ```
 
