@@ -145,7 +145,7 @@ skillTest(`manual selection injects next turn and silently expires at ${lifecycl
     return [text('A complete answer with sufficient context for compaction. '.repeat(100))];
   }, { dynamic: true, reversed });
   await host.session.prompt('Initial task with sufficient context. '.repeat(100));
-  const path = join(host.agentDir, 'skills', 'dynamic-skill', 'skills', 'manual', 'SKILL.md');
+  const path = join(dirname(host.agentDir), 'dynamic-skill', 'skills', 'dynamic-skill', 'skills', 'manual', 'SKILL.md');
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, '---\nname: manual\ndescription: MANUAL_SELECTED_DESCRIPTION\n---\nPRIVATE_SKILL_BODY\n');
   host.session.sessionManager.appendCustomEntry('dynamic-skill:manual-selection', { add: [path], remove: [] });
@@ -268,7 +268,7 @@ for (const reversed of [false, true]) skillTest(`same-batch skill write is settl
   let path;
   const host = await setup(t, (n, context, { agentDir }) => {
     if (n === 1) {
-      path = join(agentDir, 'skills', 'dynamic-skill', 'skills', 'saved', 'SKILL.md');
+      path = join(dirname(agentDir), 'dynamic-skill', 'skills', 'dynamic-skill', 'skills', 'saved', 'SKILL.md');
       return [call('backtrack', { checkpoint: 0, message: 'Read the saved skill if needed.' }, 'return'),
         call('write', { path, content: '---\nname: saved\ndescription: SAME_BATCH_SKILL\n---\nSAVED_BODY\n' }, 'save')];
     }
@@ -370,7 +370,7 @@ for (const reversed of [false, true]) skillTest(`compact then repeated zero rebu
     }
     return [text('A complete response. '.repeat(100))];
   }, { dynamic: true, reversed, persisted: true });
-  const group = join(host.agentDir, 'skills', 'dynamic-skill', 'skills', 'project', 'SKILL.md');
+  const group = join(dirname(host.agentDir), 'dynamic-skill', 'skills', 'dynamic-skill', 'skills', 'project', 'SKILL.md');
   await mkdir(dirname(group), { recursive: true });
   await writeFile(group, '---\nname: project\ndescription: Root index entry\n---\n');
   const active = join(dirname(group), 'skills', 'diagnostics', 'SKILL.md');
@@ -418,7 +418,7 @@ for (const reversed of [false, true]) skillTest(`root children are discovered on
     assert.doesNotMatch(flatten(context), /PRIVATE_CHILD_BODY/);
     return [text('Accessed child retained in active skills.')];
   }, { dynamic: true, reversed });
-  root = join(host.agentDir, 'skills', 'dynamic-skill', 'SKILL.md');
+  root = join(dirname(host.agentDir), 'dynamic-skill', 'skills', 'dynamic-skill', 'SKILL.md');
   child = join(dirname(root), 'skills', 'project', 'SKILL.md');
   await mkdir(dirname(child), { recursive: true });
   await writeFile(child, '---\nname: project\ndescription: Root child discovery\n---\nPRIVATE_CHILD_BODY');
@@ -437,7 +437,7 @@ for (const reversed of [false, true]) skillTest(`reload after aborted continuati
     assert.equal((directories.match(/NEW_ACTIVE_AFTER_ABORT/g) ?? []).length, 1);
     return [text('Finished.')];
   }, { dynamic: true, reversed, persisted: true });
-  const group = join(host.agentDir, 'skills', 'dynamic-skill', 'skills', 'group', 'SKILL.md');
+  const group = join(dirname(host.agentDir), 'dynamic-skill', 'skills', 'dynamic-skill', 'skills', 'group', 'SKILL.md');
   await mkdir(dirname(group), { recursive: true });
   await writeFile(group, '---\nname: group\ndescription: Root index entry\n---\n');
   path = join(dirname(group), 'skills', 'new-active', 'SKILL.md');
@@ -577,7 +577,7 @@ skillTest('saved skills survive backtrack, are discovered once, and read bodies 
   let skill;
   const host = await setup(t, (n, context, { agentDir }) => {
     const source = flatten(context);
-    const group = join(agentDir, 'skills', 'dynamic-skill', 'skills', 'project', 'SKILL.md');
+    const group = join(dirname(agentDir), 'dynamic-skill', 'skills', 'dynamic-skill', 'skills', 'project', 'SKILL.md');
     skill = join(dirname(group), 'skills', 'finding', 'SKILL.md');
     if (n === 1) return [
       call('write', { path: group, content: '---\nname: project\ndescription: Project knowledge\n---\n' }, 'group'),
