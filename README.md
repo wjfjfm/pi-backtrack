@@ -1,6 +1,6 @@
 # pi-backtrack
 
-Agent-controlled context for recursive thinking and exploration.
+Agent-controlled context backtracking for recursive thinking and exploration.
 
 **English** · [简体中文](README.zh-CN.md)
 
