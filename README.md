@@ -27,7 +27,7 @@ Injects a checkpoint and context usage after each user input and complete tool-r
 [checkpoint 3 | context 48K/200K 24%]
 ```
 
-The agent selects a return point based on task progress and context usage. Backtracking preserves the effective context through that checkpoint, replaces subsequent tool activity with tiered dialogue history and a handoff, then continues automatically.
+The agent monitors context usage and chooses a checkpoint to return to based on the current task. It preserves the preceding effective context intact for KV cache reuse, carrying knowledge gained during exploration into the work ahead.
 
 ```js
 backtrack({

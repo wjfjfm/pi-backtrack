@@ -27,7 +27,7 @@
 [checkpoint 3 | context 48K/200K 24%]
 ```
 
-Agent 根据任务进度和上下文状态选择回退位点。回退保留目标 checkpoint 及之前的有效上下文，将后续工具过程替换为分层对话历史和交接信息，然后自动续跑。
+Agent 感知上下文容量，根据当前任务自主回退到某个 checkpoint，完整保留此前的有效上下文以便复用 KV Cache，携带探索中积累的知识继续工作。
 
 ```js
 backtrack({
