@@ -1,134 +1,92 @@
-# ⏪ pi-backtrack
+# pi-backtrack
 
-### Let agents own their context—and explore recursively.
+Agent-controlled context for recursive thinking and exploration.
 
-**English** · [简体中文](README.zh-CN.md) · [Design & implementation](docs/design.md)
+**English** · [简体中文](README.zh-CN.md)
 
-Explore a branch. Bring back the findings. Fold away the process. Continue the main task.
-
-Instead of waiting for a full context window to trigger compression, let the agent decide **what to carry forward, when to return, and where to resume.**
-
-```text
-Main task ──●────────────────────────────────────▶ Continue
-            │                                    ▲
-            └─ Explore ──●─ Go deeper ── Findings ─┘
-                         └─ Try → Learn → Return ↗
-            checkpoint                  backtrack
+```mermaid
+flowchart LR
+    A[checkpoint 1] --> B[checkpoint 2]
+    B --> C[Explore]
+    C -->|backtrack 2| B
+    B -->|backtrack 1| A
+    A --> D[Continue main task]
 ```
 
-**Context awareness · Agent-led backtracking · Automatic continuation · Reusable knowledge**
+## How it works
 
-## 01 / How it works: a map of the context
-
-After each **user input** and **tool result boundary**, the extension injects a checkpoint and a context gauge. The agent can see its context usage and decide whether—and where—to backtrack. Parallel tool calls receive one checkpoint after the **complete tool batch**, not after each individual result.
+Injects a checkpoint and context usage after each user input and complete tool-result batch:
 
 ```text
-user input
-  └─ [checkpoint 1 | context 12K/200K 6%]
-
-Agent → tool calls → tool results
-  └─ [checkpoint 2 | context 48K/200K 24%]
-
-Agent → keep exploring, or backtrack(checkpoint: 1)
+[checkpoint 3 | context 48K/200K 24%]
 ```
 
-*Illustrative values. The gauge estimates tokens; it is not an exact measurement of the final request.*
-
-Backtracking preserves the **current effective context** through the target checkpoint, folds away subsequent tool activity, appends tiered dialogue history and the agent's handoff, then continues automatically in the same agent loop:
+The agent selects a return point based on task progress and context usage. Backtracking preserves the effective context through that checkpoint, replaces subsequent tool activity with tiered dialogue history and a handoff, then continues automatically.
 
 ```text
-Before   Retained prefix │ File reads, searches, tool output, trial and error
-After    Retained prefix │ Compact dialogue + handoff → New checkpoint → Continue
+before  prefix → checkpoint → exploration
+ after  prefix → checkpoint → dialogue + handoff → continue
 ```
 
-- **The agent chooses the route.** Explore and return at multiple levels, without waiting for overflow.
-- **No extra summarizer call.** Backtrack retains and truncates dialogue deterministically; the agent writes its own handoff.
-- **Fold context, not work.** Raw session history stays continuous. No branching, file rollback, or external-action rollback.
+- Context usage is a token estimate.
+- Backtrack makes no extra summarizer call.
+- Raw session history is preserved. No branching, file rollback, or external-action rollback.
+- Ordinary backtracks continue numbering. Returning to `0` rebuilds from the fixed starting point and restarts numbering.
 
-## 02 / The tool: one call to return
+## Tool
 
 ```js
 backtrack({
   checkpoint: 1,
-  message: "Read the pool implementation and added diagnostics. The pool is not the bottleneck; increasing its size did not help. Keep the diagnostic changes and inspect retry logic next."
+  message: "Read the pool implementation and added diagnostics. Ruled out the pool; increasing its size did not help. Keep the diagnostic changes and inspect retry logic next."
 })
 ```
 
-Just two arguments: `checkpoint` selects the return point; `message` hands off what was done and examined, findings, failed attempts and lessons, and the next step. Call it alone in its tool batch; successful backtracking continues automatically. Returning to `0` rebuilds from the fixed starting point and restarts checkpoint numbering.
+`checkpoint` selects the return point. `message` records work done, material examined, findings, failed attempts and lessons, and next steps. Call the tool alone in its batch.
 
-## 03 / Install: better with dynamic-skill
+## Install
 
 Requires a Pi 0.85.1-compatible environment. Node.js 22.19+ or 24+ is recommended.
 
-**Install both: one manages context, the other preserves reusable knowledge.**
+Recommended: install with [pi-dynamic-skill](https://github.com/wjfjfm/pi-dynamic-skill).
 
 ```sh
 pi install git:github.com/wjfjfm/pi-backtrack
 pi install git:github.com/wjfjfm/pi-dynamic-skill
 ```
 
-Run `/reload` in an existing session, or start a new one. For context backtracking alone, use only the first command; backtrack works independently.
+Run `/reload` or start a new session. Backtrack also works independently; install only the first package.
 
 <details>
-<summary>Run from local source</summary>
+<summary>Run locally</summary>
 
 ```sh
 git clone https://github.com/wjfjfm/pi-backtrack.git
 cd pi-backtrack
 npm ci
-
-# Load backtrack and the bundled dynamic-skill snapshot
 pi -e ./src/index.ts -e ./node_modules/pi-dynamic-skill/src/index.ts
 ```
 
-Backtrack only: `pi -e ./src/index.ts`. Installing the npm dependency does not activate its extension. If dynamic-skill is already enabled globally, do not load another copy.
+Omit the second `-e` to run backtrack alone. Do not load another copy of dynamic-skill if it is already enabled globally.
 
 </details>
 
-## 04 / Together: fold the context, keep the lessons
+## dynamic-skill
 
-[**pi-dynamic-skill**](https://github.com/wjfjfm/pi-dynamic-skill) stores reusable knowledge as skill files, so exploration produces more than an answer to today's task.
-
-| | pi-backtrack | pi-dynamic-skill |
-| --- | --- | --- |
-| Focus | What context the model should carry now | What knowledge to preserve and rediscover |
-| Mechanism | Checkpoint → backtrack → handoff | SKILL.md → LRU management → on-demand reading |
-| Retains | An effective prefix and a path forward | Knowledge files reusable across sessions |
+Backtrack manages current context. Dynamic-skill manages file-backed knowledge.
 
 ```text
-Explore → Distill lessons → Save skill with write / edit → backtrack
-                                                              ↓
-Continue ← Read skill body on demand ← Active skill names, descriptions, paths
+explore → write/edit SKILL.md → backtrack → read SKILL.md when needed
 ```
 
-With both enabled, the agent receives guidance to **save knowledge before backtracking**. A successful backtrack settles skill accesses and adds descriptions not already visible in the retained context. Skill bodies are never expanded automatically: restate critical findings in `message`, or explicitly direct the agent to read a named skill.
+- With both enabled, the agent receives guidance to save knowledge before backtracking.
+- Successful backtracking settles skill accesses, manages active skills via LRU, and appends names, descriptions, and paths not already visible.
+- Skill bodies are read on demand. Keep critical findings in the handoff, or specify which skill to read.
+- `/dynamic-skill` supports manual selection: Tab switches LRU/All, Space toggles, Enter applies. Additions appear on the next model turn; removals settle at the next backtrack, compact, or reload.
+- Skill files are reusable across sessions; LRU state belongs to the current session. Eviction never deletes files.
 
-You can also curate skills with `/dynamic-skill`: view **LRU** by default, press **Tab** for the hierarchical **All** tree, **Space** to toggle, and **Enter** to apply. Additions appear on the next model turn. Removals silently await the next backtrack, compact, or reload settlement. **Eviction never deletes skill files.**
+## Design reference
 
----
-
-<details>
-<summary>Boundaries and implementation details</summary>
-
-- Checkpoint 0 is the fixed starting point. Ordinary backtracks continue numbering; returning to 0 rebuilds the skill directory and restarts at 1. Previously folded raw tool activity is not resurrected.
-- Dialogue uses newest-first retention budgets: 5K full text, 3K first/last 100 tokens, 1K first/last 20, 1K first/last 10, then omitted turns. The latest user input stays complete. Images survive only with intact source messages.
-- Context estimates include the effective view, system prompt, and active tools, excluding other extensions' temporary injections. A backtrack need not reduce token count; actual overflow still uses host compaction.
-- **Pi 0.85.1 compaction adapter:** the host summarizes the effective conversation without retaining a raw tail, preventing removed tool activity from resurfacing. This changes native `keepRecentTokens` tail retention, and original images are not retained after compaction. Backtrack itself adds no summarizer call.
-- New input, cancellation, or invalid targets prevent uncommitted backtracks. Persistence failures stop execution and report the failure without claiming rollback. Both extension load orders are supported; arbitrary third-party context reordering is not guaranteed.
-
-See [design & implementation](docs/design.md) and the [dependency snapshot notes](vendor/README.md).
-
-</details>
-
-<details>
-<summary>Development & tests</summary>
-
-```sh
-npm ci
-npm run typecheck
-npm test
-```
-
-Tests cover real Pi SDK tool loops, continuation, both load orders, skill cooperation, cancellation, recovery, compaction, and overflow retries. A scripted provider requires no model credentials.
-
-</details>
+- [Design & implementation](docs/design.md): checkpoints, context projection, tiered history, backtrack transactions, and SDK adaptation.
+- [pi-dynamic-skill](https://github.com/wjfjfm/pi-dynamic-skill): skill trees, LRU, and on-demand loading.
+- [Dependency snapshot](vendor/README.md): companion version and update procedure.
