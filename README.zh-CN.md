@@ -4,13 +4,24 @@
 
 [English](README.md) · **简体中文**
 
-```mermaid
-flowchart LR
-    A[checkpoint 1] --> B[checkpoint 2]
-    B --> C[探索]
-    C -->|backtrack 2| B
-    B -->|backtrack 1| A
-    A --> D[继续主线]
+```text
+      |
+      v
+      o<--------------------- backtrack -------------------------+
+      |                                                          |
+      +--> explore --+                                           |
+      |              |                                           |
+      |              o<------- backtrack -------+                |
+      |              |                          |                |
+      |              +--> explore --------------+                |
+      |              |                                           |
+      |              o<------- backtrack -------+                |
+      |              |                          |                |
+      |              +--> explore --------------+                |
+      |              |                                           |
+      |              +-------------------------------------------+
+      |
+      v
 ```
 
 ## 原理
@@ -22,18 +33,6 @@ flowchart LR
 ```
 
 Agent 根据任务进度和上下文状态选择回退位点。回退保留目标 checkpoint 及之前的有效上下文，将后续工具过程替换为分层对话历史和交接信息，然后自动续跑。
-
-```text
-before  prefix → checkpoint → exploration
- after  prefix → checkpoint → dialogue + handoff → continue
-```
-
-- 上下文用量为 token 估算。
-- backtrack 不额外调用模型生成摘要。
-- 原始 session 历史保留，不切换分支，不回滚文件或外部操作。
-- 普通回退延续编号；回退到 `0` 从固定起点重建，编号重新开始。
-
-## 工具
 
 ```js
 backtrack({
@@ -55,7 +54,7 @@ pi install git:github.com/wjfjfm/pi-backtrack
 pi install git:github.com/wjfjfm/pi-dynamic-skill
 ```
 
-执行 `/reload` 或启动新会话。backtrack 可独立使用，只需安装第一项。
+执行 `/reload` 或启动新会话。backtrack 可独立使用，但推荐使用 pi-dynamic-skill 模块承载长期记忆。
 
 <details>
 <summary>本地运行</summary>
@@ -73,17 +72,27 @@ pi -e ./src/index.ts -e ./node_modules/pi-dynamic-skill/src/index.ts
 
 ## dynamic-skill
 
-backtrack 管理当前上下文，dynamic-skill 管理文件化知识。
+**Context 是工作集，skill 是长期记忆。**
 
 ```text
-explore → write/edit SKILL.md → backtrack → read SKILL.md when needed
+           working context                     persistent skills
+      +------------------------+           +------------------------+
+      | explore -> findings    |-- save -->| SKILL.md               |
+      |                        |           | knowledge + procedures |
+      | checkpoint <- backtrack|<-- read --| lessons + failed paths |
+      +-----------+------------+           +------------------------+
+                  |
+                  v
+               continue
 ```
 
-- 同时启用后，Agent 会收到回退前保存知识的指引。
-- 成功回退结算技能访问，按 LRU 管理活跃技能，追加尚未可见的名称、描述和路径。
-- 技能正文按需读取。交接信息应保留关键结论，或指明需要读取的 skill。
-- `/dynamic-skill` 支持手选：Tab 切换 LRU/All，Space 勾选，Enter 应用。新增项下一模型 turn 注入；取消项在下次 backtrack、compact 或 reload 结算时移出队列。
-- 技能文件可跨会话复用；LRU 状态属于当前会话。淘汰不删除文件。
+Agent 在回退前用 `write` / `edit` 固化结论、方法和失败路径。backtrack 收起探索过程；下一次遇到相关任务，再通过 `read` 取回知识，不必重走同一条支线。
+
+- **按需加载**：上下文只注入技能的名称、描述和路径，正文需要时再读。
+- **LRU 管理**：回退时结算访问，更新技能目录；技能离开队列，文件仍然保留。
+- **手工选择**：`/dynamic-skill` → Tab 切换 LRU / All → Space 勾选 → Enter 应用。
+
+技能文件跨会话复用，活跃队列按会话维护。
 
 ## Design reference
 

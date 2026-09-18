@@ -4,13 +4,24 @@ Agent-controlled context for recursive thinking and exploration.
 
 **English** · [简体中文](README.zh-CN.md)
 
-```mermaid
-flowchart LR
-    A[checkpoint 1] --> B[checkpoint 2]
-    B --> C[Explore]
-    C -->|backtrack 2| B
-    B -->|backtrack 1| A
-    A --> D[Continue main task]
+```text
+      |
+      v
+      o<--------------------- backtrack -------------------------+
+      |                                                          |
+      +--> explore --+                                           |
+      |              |                                           |
+      |              o<------- backtrack -------+                |
+      |              |                          |                |
+      |              +--> explore --------------+                |
+      |              |                                           |
+      |              o<------- backtrack -------+                |
+      |              |                          |                |
+      |              +--> explore --------------+                |
+      |              |                                           |
+      |              +-------------------------------------------+
+      |
+      v
 ```
 
 ## How it works
@@ -22,18 +33,6 @@ Injects a checkpoint and context usage after each user input and complete tool-r
 ```
 
 The agent selects a return point based on task progress and context usage. Backtracking preserves the effective context through that checkpoint, replaces subsequent tool activity with tiered dialogue history and a handoff, then continues automatically.
-
-```text
-before  prefix → checkpoint → exploration
- after  prefix → checkpoint → dialogue + handoff → continue
-```
-
-- Context usage is a token estimate.
-- Backtrack makes no extra summarizer call.
-- Raw session history is preserved. No branching, file rollback, or external-action rollback.
-- Ordinary backtracks continue numbering. Returning to `0` rebuilds from the fixed starting point and restarts numbering.
-
-## Tool
 
 ```js
 backtrack({
@@ -55,7 +54,7 @@ pi install git:github.com/wjfjfm/pi-backtrack
 pi install git:github.com/wjfjfm/pi-dynamic-skill
 ```
 
-Run `/reload` or start a new session. Backtrack also works independently; install only the first package.
+Run `/reload` or start a new session. Backtrack works independently, but pi-dynamic-skill is recommended for long-term memory.
 
 <details>
 <summary>Run locally</summary>
@@ -73,17 +72,27 @@ Omit the second `-e` to run backtrack alone. Do not load another copy of dynamic
 
 ## dynamic-skill
 
-Backtrack manages current context. Dynamic-skill manages file-backed knowledge.
+**Context is the working set. Skills are long-term memory.**
 
 ```text
-explore → write/edit SKILL.md → backtrack → read SKILL.md when needed
+           working context                     persistent skills
+      +------------------------+           +------------------------+
+      | explore -> findings    |-- save -->| SKILL.md               |
+      |                        |           | knowledge + procedures |
+      | checkpoint <- backtrack|<-- read --| lessons + failed paths |
+      +-----------+------------+           +------------------------+
+                  |
+                  v
+               continue
 ```
 
-- With both enabled, the agent receives guidance to save knowledge before backtracking.
-- Successful backtracking settles skill accesses, manages active skills via LRU, and appends names, descriptions, and paths not already visible.
-- Skill bodies are read on demand. Keep critical findings in the handoff, or specify which skill to read.
-- `/dynamic-skill` supports manual selection: Tab switches LRU/All, Space toggles, Enter applies. Additions appear on the next model turn; removals settle at the next backtrack, compact, or reload.
-- Skill files are reusable across sessions; LRU state belongs to the current session. Eviction never deletes files.
+Before backtracking, the agent uses `write` / `edit` to persist findings, procedures, and failed approaches. Backtrack folds away the exploration. A later task can `read` the skill instead of retracing the same branch.
+
+- **On-demand loading**: only skill names, descriptions, and paths are injected. Read bodies when needed.
+- **LRU management**: backtracking settles accesses and updates the skill directory. Eviction removes queue membership, not files.
+- **Manual selection**: `/dynamic-skill` → Tab for LRU / All → Space to toggle → Enter to apply.
+
+Skill files persist across sessions. Active queues are session-local.
 
 ## Design reference
 
