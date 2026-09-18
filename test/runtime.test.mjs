@@ -130,6 +130,37 @@ for (const reversed of [false, true]) test(`dynamic skills and checkpoint zero r
   assert.equal(host.contexts.length, 2, JSON.stringify({ messages: host.session.messages, errors: host.errors }));
 });
 
+for (const reversed of [false, true]) for (const lifecycle of ['backtrack', 'compact', 'reload'])
+test(`manual selection injects next turn and silently expires at ${lifecycle} (${reversed})`, async (t) => {
+  let shouldBacktrack = false;
+  const host = await setup(t, () => {
+    if (shouldBacktrack) {
+      shouldBacktrack = false;
+      return [call('backtrack', { checkpoint: 0, message: 'Continue.' }, 'manual-reset')];
+    }
+    return [text('A complete answer with sufficient context for compaction. '.repeat(100))];
+  }, { dynamic: true, reversed });
+  await host.session.prompt('Initial task with sufficient context. '.repeat(100));
+  const path = join(host.agentDir, 'skills', 'dynamic-skill', 'skills', 'manual', 'SKILL.md');
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, '---\nname: manual\ndescription: MANUAL_SELECTED_DESCRIPTION\n---\nPRIVATE_SKILL_BODY\n');
+  host.session.sessionManager.appendCustomEntry('dynamic-skill:manual-selection', { add: [path], remove: [] });
+  await host.session.prompt('Use my selection');
+  assert.match(flatten(host.contexts.at(-1)), /New active skills/);
+  assert.match(flatten(host.contexts.at(-1)), /MANUAL_SELECTED_DESCRIPTION/);
+  assert.doesNotMatch(flatten(host.contexts.at(-1)), /PRIVATE_SKILL_BODY/);
+  host.session.sessionManager.appendCustomEntry('dynamic-skill:manual-selection', { add: [], remove: [path] });
+  if (lifecycle === 'reload') await host.session.reload();
+  if (lifecycle === 'compact') await host.session.compact();
+  if (lifecycle === 'backtrack') shouldBacktrack = true;
+  await host.session.prompt('Continue task');
+  const state = host.session.sessionManager.getBranch().findLast((entry) => entry.type === 'custom' && entry.customType === 'dynamic-skill:access-state').data;
+  assert.ok(!state.active.includes(path));
+  assert.ok(!state.pendingEviction.includes(path));
+  assert.equal(await readFile(path, 'utf8'), '---\nname: manual\ndescription: MANUAL_SELECTED_DESCRIPTION\n---\nPRIVATE_SKILL_BODY\n', 'manual eviction never deletes or rewrites the skill');
+  assert.deepEqual(host.errors, []);
+});
+
 for (const injectionFirst of [false, true]) for (const target of [0, 1])
 test(`node navigation preserves external context injections (first=${injectionFirst}, target=${target})`, async (t) => {
   let compacting = false;
@@ -295,8 +326,8 @@ for (const reversed of [false, true]) test(`compact then repeated zero rebuild k
   assert.deepEqual(host.errors, []);
 });
 
-for (const reversed of [false, true]) test(`root children are discovered by reading the root, not injected (${reversed})`, async (t) => {
-  let root;
+for (const reversed of [false, true]) test(`root children are discovered on demand and enter active skills after backtrack (${reversed})`, async (t) => {
+  let root, child;
   const host = await setup(t, (n, context) => {
     assert.match(context.systemPrompt, /<name>dynamic-skill<\/name>/);
     assert.doesNotMatch(flatten(context), /### Root Skills/);
@@ -304,15 +335,22 @@ for (const reversed of [false, true]) test(`root children are discovered by read
       assert.doesNotMatch(flatten(context), /Root child discovery/);
       return [call('read', { path: root }, 'read-root')];
     }
-    const results = JSON.stringify(context.messages.filter(m => m.role === 'toolResult'));
-    assert.match(results, /Root child discovery/);
-    assert.match(results, /skills\/project\/SKILL.md/);
-    return [text('Root index discovered.')];
+    if (n === 2) {
+      const results = JSON.stringify(context.messages.filter(m => m.role === 'toolResult'));
+      assert.match(results, /Root child discovery/);
+      assert.match(results, /skills\/project\/SKILL.md/);
+      return [call('read', { path: child }, 'read-child')];
+    }
+    if (n === 3) return [call('backtrack', { checkpoint: 0, message: 'Continue using the saved skill.' }, 'bt-child')];
+    assert.match(flatten(context), /Active skills \(1\/20\)/);
+    assert.equal((flatten(context).match(/Root child discovery/g) ?? []).length, 1);
+    assert.doesNotMatch(flatten(context), /PRIVATE_CHILD_BODY/);
+    return [text('Accessed child retained in active skills.')];
   }, { dynamic: true, reversed });
   root = join(host.agentDir, 'skills', 'dynamic-skill', 'SKILL.md');
-  const child = join(dirname(root), 'skills', 'project', 'SKILL.md');
+  child = join(dirname(root), 'skills', 'project', 'SKILL.md');
   await mkdir(dirname(child), { recursive: true });
-  await writeFile(child, '---\nname: project\ndescription: Root child discovery\n---\n');
+  await writeFile(child, '---\nname: project\ndescription: Root child discovery\n---\nPRIVATE_CHILD_BODY');
   await host.session.reload();
   await host.session.prompt('Find the available knowledge.');
   assert.deepEqual(host.errors, []);

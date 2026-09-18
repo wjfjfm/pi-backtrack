@@ -1,6 +1,6 @@
 # Companion dependency snapshot
 
-`pi-dynamic-skill-0.0.0.tgz` contains the matching unpublished dynamic-skill implementation (source, compiled JavaScript, declarations, templates and README files). It is generated from sibling repository commit `ddafac8abfdf4cf44358acb46d06b9df75020300`, including stable projections and on-demand root-index discovery (no injected Root Skills section). `package-lock.json` pins the archive's integrity.
+`pi-dynamic-skill-0.0.0.tgz` contains the matching unpublished dynamic-skill implementation (source, compiled JavaScript, declarations, templates and README files). It is generated from sibling repository base commit `ddafac8abfdf4cf44358acb46d06b9df75020300` plus the direct-child LRU fix and manual skill picker: only roots are exempt; successfully accessed descendants at every depth enter active/pending lists. `/dynamic-skill` now offers LRU/All tabs, persisted manual choices, next-turn metadata injection, and silent manual eviction on settlement. It includes stable projections and on-demand root-index discovery (no injected Root Skills section). `package-lock.json` pins the archive's integrity.
 
 A checked-in snapshot keeps `npm ci` self-contained: neither a sibling checkout nor a not-yet-published Git commit is required to install backtrack. It does not automatically enable the dynamic-skill extension.
 
