@@ -49,7 +49,7 @@ pi install git:github.com/wjfjfm/pi-backtrack
 pi install git:github.com/wjfjfm/pi-dynamic-skill
 ```
 
-执行 `/reload` 或启动新会话。两个包独立安装、独立演进。backtrack 可独立使用，但推荐使用 pi-dynamic-skill 模块承载长期记忆。
+执行 `/reload` 或启动新会话。backtrack 可独立使用，但推荐使用 pi-dynamic-skill 模块承载长期记忆。
 
 <details>
 <summary>本地运行</summary>

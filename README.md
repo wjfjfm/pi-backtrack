@@ -49,7 +49,7 @@ pi install git:github.com/wjfjfm/pi-backtrack
 pi install git:github.com/wjfjfm/pi-dynamic-skill
 ```
 
-Run `/reload` or start a new session. The packages install and evolve independently. Backtrack works independently, but pi-dynamic-skill is recommended for long-term memory.
+Run `/reload` or start a new session. Backtrack works independently, but pi-dynamic-skill is recommended for long-term memory.
 
 <details>
 <summary>Run locally</summary>
