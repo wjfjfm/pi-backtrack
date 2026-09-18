@@ -2,85 +2,97 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Agent-controlled context backtracking with checkpoints and handoffs.
+Agent-controlled context backtracking with automatic checkpoints and continuation. **Session history remains continuous: no branching, file rollback, or external-action rollback.**
 
-Let an agent fold away exploration it has already processed, return to an earlier checkpoint with its findings, and continue a long-running task.
+## Use
 
-## Design references
+Targets Pi SDK 0.85.1; Node 22.19+ or 24+ is recommended.
 
-- [Kimi CLI / SendDMail](https://github.com/MoonshotAI/kimi-cli/tree/main/src/kimi_cli/tools/dmail): enables agents to write handoffs, backtrack, and resume execution, with checkpoint IDs injected into context.
-- [pi-context](https://github.com/ttttmr/pi-context): provides a history timeline so agents can locate nodes and actively fold context without checkpoint IDs injected at every step.
-- [KorenKrita/pi-context](https://github.com/KorenKrita/pi-context): extends the upstream project with context usage indicators to help agents decide when to fold.
-
-## Status
-
-The Pi extension entry point and `backtrack` tool registration are implemented. A memory adapter now uses `pi-dynamic-skill` as a regular package dependency to create session-scoped skill files. Checkpoint injection and backtracking execution are still pending; the tool does not call the adapter yet. Tool calls currently return an explicit error without changing context.
-
-## Planned interaction
-
-Before the first model generation, and before the next generation after each completed tool batch, the host automatically creates a checkpoint and appends a model-visible status marker:
-
-```text
-[checkpoint 20 | context 100K/300K 33%]
+```sh
+npm ci
+pi -e ./src/index.ts
+# Enable the companion skill extension as well:
+pi -e ./src/index.ts -e ./node_modules/pi-dynamic-skill/src/index.ts
 ```
 
-Once the agent decides an exploration is complete or has taken the wrong direction, it calls:
+Installing the package dependency does not automatically activate its extension. A separately installed compatible dynamic-skill extension also works; do not load two copies.
 
 ```js
 backtrack({
-  checkpoint: 20,
-  description: "Database investigation findings and evidence for later review.",
-  knowledge: "Database issues ruled out. Diagnostic logging has been added but not committed.",
-  message: "Inspect the retry loop in retry.ts."
+  checkpoint: 2,
+  message: "Database issues ruled out. Diagnostic logging is uncommitted. Inspect retry.ts next."
 })
 ```
 
-The planned host behavior keeps the history before the target and preserves user/assistant dialogue from the suffix as a chronological text block, while folding thinking, tool calls, and tool results into file-backed knowledge. The new entry is expanded; older entries collapse to their descriptions. The separate `message` is appended to the continuation context, not stored in the knowledge entry. The original suffix remains available for recovery.
+Only `checkpoint` and `message` are accepted. Legacy `description`/`knowledge` arguments are rejected. Save useful knowledge with ordinary dynamic-skill write/edit operations **before** backtracking. Backtrack no longer creates its own skill files.
+
+## Behavior
 
 ```text
-Before: prefix → 20 → extensive exploration → backtrack call
-After:  prefix (older knowledge collapsed) → dialogue block → new knowledge expanded → message → new checkpoint → continued execution
+stable prefix → checkpoint 0 → skills → user → checkpoint 1
+→ assistant(tool calls) → complete tool batch → checkpoint 2
+→ assistant(final reply) → next user → checkpoint 3
 ```
 
-A single user input can drive many tool rounds. No further user input or advance checkpoint call by the agent is required.
+- Checkpoints follow real user inputs and complete tool batches, not individual tool results or assistant-only replies. Request retries do not allocate duplicate IDs.
+- Ordinary backtracks continue numbering within the current epoch. Returning to 0 rebuilds skills and restarts at 1; internal epoch identities reject stale requests.
+- Backtrack must be the only tool call in its batch. The tool reports preparation; the host commits after the complete batch is persisted. The same agent loop continues automatically.
+- New/queued input, cancellation, or invalid targets prevent uncommitted backtracks. Partial commit failures stop continuation and are reported, not blindly replayed.
 
-## Initial scope
-
-- Multiple tool calls in one model response form a single batch. The next checkpoint is created only after all results arrive.
-- Backtrack must be the only tool call in its batch. The host enforces this constraint rather than relying on prompting alone.
-- Only context is rewound. Files, processes, and external actions are not rolled back; the handoff must account for their state.
-- The current agent writes the summary, with no separate summarizer request.
-- Knowledge is stored as a `SKILL.md` file: `description` in frontmatter and `knowledge` in the body. Ordinary `read` retrieves it without a dedicated knowledge tool; the next backtrack will collapse older entries and their read copies again. The continuation `message` is not returned when reading an entry.
-- Existing markers stay unchanged to preserve the prefix. Backtracking can still invalidate cached content after the target.
-- Inexact usage is explicitly marked as an estimate. UI readings or previous-request usage must not be presented as exact current occupancy.
-- The first version handles suffix backtracking only. Arbitrary range compression, history search, and recovery tools are left for later design.
-
-See the [design notes (Chinese)](docs/design.md) for implementation constraints and open validation questions.
-
-## Memory dependency
-
-`pi-dynamic-skill` is installed automatically as a Git dependency pinned to a commit. No separate extension installation or event bus is needed. `src/memory.ts` exposes `createBacktrackMemory(sessionFile, args)` for the future backtrack transaction; it stores only `description` and `knowledge`, excluding the continuation `message`.
+The resulting model context is:
 
 ```text
-<sessionDir>/
-  <sessionFileStem>.jsonl
-  <sessionFileStem>/skills/backtrack-<datetime>/SKILL.md
+retained prefix → skill diff/rebuild → tiered dialogue → continuation message → new checkpoint
 ```
 
-Names use local time to millisecond precision, with a numeric suffix on collisions. Session indexes can retain a lightweight skill reference instead of duplicating its body in JSONL. Move the companion directory together with the session file when migrating a session. Runtime injection, replacement, and fork handling are still pending.
+Raw history remains in the same session. Versioned custom entries persist immutable blocks and effective-view references, without copying large raw tool results into each snapshot. In-memory sessions are supported without filesystem persistence.
 
-## Development
+## Dialogue budget
+
+Dialogue comes from the original session interval, including conversations hidden by earlier backtracks, not from an already shortened projection. It is displayed chronologically after newest-first allocation:
+
+| Estimated output tokens | Per-message retention |
+| --- | --- |
+| 5K | Full text |
+| 3K | First/last 100 tokens |
+| 1K | First/last 20 tokens |
+| 1K | First/last 10 tokens |
+| Older | Omitted-turn notice |
+
+Whole messages move to a smaller tier when they do not fit. The latest user text is always complete, even over budget. Original user images are retained and estimated separately. No extra summarizer call is made by backtrack.
+
+```text
+[12 turns omitted]
+user: beginning[800 tokens omitted]ending
+assistant: beginning[2.4K tokens omitted]ending
+```
+
+Token estimates distinguish CJK, Latin/digits, punctuation, and whitespace. Truncation preserves grapheme boundaries. Omission counts above 2000 use K.
+
+Tool guidance targets 0%-20% context usage for short tasks, 20%-50% for standard tasks, and 40%-80% for difficult tasks. These are advisory, not hard gates or minimums to fill. Backtracks may increase tokens; actual overflow uses native compaction.
+
+## Dynamic-skill cooperation
+
+Successful backtracking settles accesses once from raw session history. Descriptions already visible anywhere in the retained context are not printed again. Visible overflow candidates remain active beyond configured capacity, rather than becoming hidden pending entries. Only actually displayed pending notices count as announced. Returning to zero rebuilds the directory without clearing LRU or deleting files.
+
+The versioned `pi-dynamic-skill/context` service uses the event bus only for synchronous discovery. Prepare/commit calls propagate errors directly and work in either extension load order.
+
+## SDK limitation
+
+Pi 0.85.1 prepares native compaction from raw session entries and retains a raw tail by entry ID. To avoid resurrecting removed tools, this extension supplies the **entire effective context** to the host's existing summarizer and retains no raw tail. It still uses the host's single compaction request, cancellation, retry, and usage accounting, then regenerates checkpoints.
+
+Consequently native `keepRecentTokens` does not preserve a raw tail while this adapter is enabled. Supporting a materialized effective tail requires a suitable host API. See [design and implementation decisions](docs/design.md).
+
+Projection failures stop requests instead of falling back to raw history. Extensions that rewrite an already saved message prefix trigger this protection; ordinary append-only messages are supported.
+
+## Development and dependency snapshot
+
+The companion package snapshot is included in `vendor/` so this unreleased integration installs independently of a sibling checkout or unpublished remote commit. See `vendor/README.md` for rebuilding it. A future release can replace it with an immutable Git dependency.
 
 ```sh
-npm install
+npm ci
 npm run typecheck
 npm test
 ```
 
-Development targets Pi SDK 0.85.1. Tests require Node.js 22.18+ or 24+ for native TypeScript loading. To load the extension locally:
-
-```sh
-pi -e ./src/index.ts
-```
-
-Loading registers the tool only; it does not yet enable context backtracking.
+Tests compile TypeScript first and use real Pi SDK sessions with a scripted provider; no model credentials or native TypeScript stripping flags are required.

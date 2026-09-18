@@ -5,7 +5,9 @@
   "description": "Agent-controlled context backtracking with checkpoints and handoffs for Pi",
   "type": "module",
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "^0.85.1",
@@ -13,15 +15,16 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/*.test.mjs"
+    "build": "tsc -p tsconfig.build.json",
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {
-    "pi-dynamic-skill": "git+https://github.com/wjfjfm/pi-dynamic-skill.git#19dacb4bbbd2460298b14df87ff3815e0c26d768"
+    "pi-dynamic-skill": "file:vendor/pi-dynamic-skill-0.0.0.tgz"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
     "@earendil-works/pi-ai": "0.85.1",
     "@earendil-works/pi-coding-agent": "0.85.1",
+    "@types/node": "^22.0.0",
     "typescript": "5.9.3"
   }
 }

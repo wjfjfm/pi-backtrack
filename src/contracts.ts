@@ -1,31 +1,35 @@
-/** Runtime contracts for the upcoming checkpoint and backtracking implementation. */
-import type { SkillReference } from "pi-dynamic-skill";
+import type { ContextMessage } from "pi-dynamic-skill/context";
 export type { BacktrackArguments } from "./schema.js";
-
-/** Non-negative safe integer, allocated monotonically within a session. */
-export type CheckpointId = number;
-
-export interface ContextStatus {
-  usedTokens: number | null;
-  windowTokens: number | null;
-  accuracy: "exact" | "estimated" | "unknown";
-}
-
-/** Durable mapping from the model-visible address to a Pi history boundary. */
+export const STATE = "backtrack:state:v1";
+export const BLOCK = "backtrack:block:v1";
+export const REQUEST = "backtrack:request:v1";
+export const CANCELLED = "backtrack:cancelled:v1";
+export const COMPACT_BOUNDARY = "backtrack:compact-boundary:v1";
 export interface Checkpoint {
-  id: CheckpointId;
-  sessionId: string;
-  boundaryEntryId: string;
-  status: ContextStatus;
+  id: number;
+  ref: string;
+  /** Original session entry after which the history interval starts. null = start. */
+  boundary: string | null;
 }
-
-/** Session index stores a skill reference, not its body or continuation message. */
-export interface KnowledgeEntry extends SkillReference {
-  sessionId: string;
-  checkpoint: CheckpointId;
+export interface BacktrackState {
+  version: 1;
+  epoch: string;
+  revision: string;
+  base: string | null;
+  next: number;
+  inputKeys: string[];
+  /** Immutable session-entry references; raw tool outputs are not copied into snapshots. */
+  view: string[];
+  checkpoints: Checkpoint[];
+  lastTransaction?: string;
 }
-
-/** Model-visible view; collapsed entries expose only their description. */
-export type KnowledgeView =
-  | (SkillReference & { expanded: false })
-  | (SkillReference & { expanded: true; knowledge: string });
+export interface PreparedBacktrack {
+  id: string;
+  callId: string;
+  assistantId: string;
+  revision: string;
+  epoch: string;
+  target: number;
+  message: string;
+}
+export type Message = ContextMessage;

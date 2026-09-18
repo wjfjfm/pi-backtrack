@@ -16,9 +16,18 @@ export const backtrackParameters = Type.Object({
     maximum: Number.MAX_SAFE_INTEGER,
     description: parameterDescriptions.checkpoint,
   }),
-  description: requiredText(parameterDescriptions.description),
-  knowledge: requiredText(parameterDescriptions.knowledge),
   message: requiredText(parameterDescriptions.message),
 }, { additionalProperties: false });
 
 export type BacktrackArguments = Static<typeof backtrackParameters>;
+
+/** Revalidate after extension tool_call hooks, which can mutate validated arguments. */
+export function validateArguments(value: unknown): asserts value is BacktrackArguments {
+  if (!value || typeof value !== "object") throw new Error("Invalid backtrack arguments.");
+  const args = value as Record<string, unknown>;
+  if (Object.keys(args).some((key) => key !== "checkpoint" && key !== "message")
+    || !Number.isSafeInteger(args.checkpoint) || (args.checkpoint as number) < 0
+    || typeof args.message !== "string" || !args.message.trim()) {
+    throw new Error("backtrack requires only a non-negative safe-integer checkpoint and a nonblank message. Save knowledge with dynamic-skill before calling backtrack.");
+  }
+}
