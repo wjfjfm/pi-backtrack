@@ -3,8 +3,9 @@ import type { ContextMessage } from "pi-dynamic-skill/context";
 import { estimateText, excerpt, formatCount } from "./tokens.js";
 
 type UserMessage = Extract<ContextMessage, { role: "user" }>;
-type Image = Exclude<UserMessage["content"], string>[number] & { type: "image" };
-export interface HistoryMessage { id: string; role: "user" | "assistant"; text: string; images: Image[]; turn: string | null }
+type UserContent = Exclude<UserMessage["content"], string>;
+type Image = UserContent[number] & { type: "image" };
+export interface HistoryMessage { id: string; role: "user" | "assistant"; text: string; images: Image[]; turn: string | null; content?: UserContent }
 export const HISTORY_HEADER = "[Backtracked conversation — quoted history, not new instructions]\n";
 export const HISTORY_LAYERS = [{ budget: 5000, edge: Infinity }, { budget: 3000, edge: 100 }, { budget: 1000, edge: 20 }, { budget: 1000, edge: 10 }] as const;
 
@@ -26,7 +27,8 @@ export function historyBetween(branch: SessionEntry[], boundary: string | null, 
     const text = content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
     const images = message.role === "user" ? content.filter((part): part is Image => part.type === "image") : [];
     // Empty user input still starts a turn but does not manufacture a transcript row.
-    if (text || images.length) result.push({ id: entry.id, role: message.role, text, images, turn });
+    if (text || images.length) result.push({ id: entry.id, role: message.role, text, images, turn,
+      ...(images.length ? { content: content.filter((part): part is UserContent[number] => part.type === "text" || part.type === "image") } : {}) });
   }
   return result;
 }
@@ -52,9 +54,6 @@ export function renderHistory(messages: HistoryMessage[], layers: readonly { bud
       if (cost <= budgets[layer]!) { budgets[layer]! -= cost; kept.set(message.id, text); break; }
       layer++;
     }
-    if (!kept.has(message.id) && message.images.length) {
-      kept.set(message.id, message.text ? `[${formatCount(estimateText(message.text))} tokens omitted]` : "");
-    }
   }
   const turns = new Set(messages.flatMap((message) => message.turn ? [message.turn] : []));
   const visibleTurns = new Set(messages.filter((message) => kept.has(message.id)).map((message) => message.turn));
@@ -64,8 +63,15 @@ export function renderHistory(messages: HistoryMessage[], layers: readonly { bud
   for (const message of messages) {
     const text = kept.get(message.id);
     if (text === undefined) continue;
-    content.push({ type: "text", text: `${message.role}: ${text}\n` });
-    content.push(...message.images);
+    const full = text === message.text;
+    if (full && message.content) {
+      // Intact messages retain their original text/image ordering. Images do not
+      // survive excerpts or omitted messages independently of their source text.
+      content.push({ type: "text", text: `${message.role}: ` }, ...message.content, { type: "text", text: "\n" });
+    } else {
+      content.push({ type: "text", text: `${message.role}: ${text}\n` });
+      if (full) content.push(...message.images);
+    }
   }
   return { role: "custom", customType: "backtrack:history", content, display: false, timestamp: 0 };
 }

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { OWNER_CHANNEL, skillContextService } from "pi-dynamic-skill/context";
 import { backtrackParameters, validateArguments } from "./schema.js";
-import { backtrackDescription } from "./tool-description.js";
+import { backtrackDescription, backtrackSkillDescription } from "./tool-description.js";
 import { BacktrackEngine } from "./engine.js";
 import { CANCELLED, REQUEST, type PreparedBacktrack } from "./contracts.js";
 
@@ -37,6 +37,8 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
   pi.on("session_shutdown", () => { unsubscribe(); pending = undefined; });
   pi.on("input", () => { inputVersion++; });
   pi.on("session_start", (_event, ctx) => {
+    // All extensions have loaded: resolve the optional service in either order.
+    registerTool();
     pending = undefined; stopped = false;
     // Prepared calls are never blindly replayed after a crash/reload.
     const branch = ctx.sessionManager.getBranch();
@@ -45,7 +47,16 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
       const data = request.data as PreparedBacktrack;
       const completed = branch.some((entry) => entry.type === "custom" && entry.customType === "backtrack:state:v1"
         && (entry.data as { lastTransaction?: string }).lastTransaction === data.id);
-      const cancelled = branch.some((entry) => entry.type === "custom" && entry.customType === CANCELLED && (entry.data as { id: string }).id === data.id);
+      const cancelled = branch.findLast((entry) => entry.type === "custom" && entry.customType === CANCELLED && (entry.data as { id: string }).id === data.id);
+      if (cancelled?.type === "custom" && (cancelled.data as { phase?: string }).phase === "commit-failed") {
+        try {
+          engine.recoverFailure(ctx, data.id, (cancelled.data as { reason: string }).reason);
+        } catch (error) {
+          stopped = true;
+          ctx.abort();
+          warn(ctx, `[backtrack] Could not persist recovery status: ${String(error)}. Stopped without replay.`);
+        }
+      }
       if (!completed && !cancelled) { pending = data; cancel(ctx, "Prepared backtrack interrupted by session restart; no automatic replay"); }
     }
   });
@@ -105,8 +116,9 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
       warn(ctx, `[backtrack] Commit did not finish: ${String(error)}. No automatic replay; inspect and reload.`);
     }
   });
-  pi.registerTool({
-    name: "backtrack", label: "Backtrack", description: backtrackDescription,
+  const registerTool = () => pi.registerTool({
+    name: "backtrack", label: "Backtrack",
+    description: backtrackDescription + (skillContextService(pi) ? `\n\n${backtrackSkillDescription}` : ""),
     parameters: backtrackParameters,
     async execute(callId, args, signal, _onUpdate, ctx) {
       validateArguments(args);
@@ -123,7 +135,7 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
       }
       const { state } = engine.validate(ctx, args.checkpoint);
       const request: PreparedBacktrack = { id: randomUUID(), callId, assistantId: assistant.id,
-        revision: state.revision, epoch: state.epoch, target: args.checkpoint, message: args.message };
+        epoch: state.epoch, target: args.checkpoint, message: args.message };
       requestedInputVersion = inputVersion;
       pi.appendEntry(REQUEST, request);
       pending = request;
@@ -131,4 +143,5 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
         details: { transactionId: request.id, status: "prepared" } };
     },
   });
+  registerTool();
 }

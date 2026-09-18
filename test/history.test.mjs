@@ -3,7 +3,8 @@ import { test } from 'node:test';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { historyBetween, renderHistory } from '../dist/history.js';
 import { estimateText, estimateMessages, excerpt, formatCount, graphemes } from '../dist/tokens.js';
-import { validateArguments } from '../dist/schema.js';
+import { backtrackParameters, validateArguments } from '../dist/schema.js';
+import { backtrackDescription } from '../dist/tool-description.js';
 const plain = (message) => message.content.filter((part) => part.type === 'text').map((part) => part.text).join('');
 const row = (id, role, text, turn = id, images = []) => ({ id, role, text, turn, images });
 
@@ -12,6 +13,18 @@ test('strict arguments reject old schemas, unsafe IDs, fractions and blank conti
     { checkpoint: Number.MAX_SAFE_INTEGER + 1, message: 'x' }, { checkpoint: 0, message: ' ' },
     { checkpoint: 0, message: 'x', knowledge: 'old' }]) assert.throws(() => validateArguments(args));
   assert.doesNotThrow(() => validateArguments({ checkpoint: 0, message: 'Continue' }));
+});
+
+test('tool parameters describe an intact prefix and a checkpoint-relative work handoff', () => {
+  assert.deepEqual(Object.keys(backtrackParameters.properties), ['checkpoint', 'message']);
+  assert.match(backtrackParameters.properties.checkpoint.description, /Context through this checkpoint is preserved intact/);
+  assert.doesNotMatch(backtrackDescription, /managed|request-local|provider|hard limits|minimums to fill|if enabled/);
+  assert.match(backtrackDescription, /0-20%.*short tasks, 0-40%.*standard tasks, and 0-80%.*difficult tasks/);
+  assert.match(backtrackDescription, /user clearly changes topics/);
+  assert.match(backtrackDescription, /returning to the main task/);
+  const handoff = backtrackParameters.properties.message.description;
+  for (const phrase of ['after the target checkpoint', 'what you did', 'what you examined', 'what you learned',
+    'failed attempts and their lessons', 'what you plan to do next']) assert.ok(handoff.includes(phrase));
 });
 
 test('classified token estimates and omission formatting preserve grapheme boundaries', () => {
@@ -62,15 +75,39 @@ test('whole messages downgrade, older messages never backfill; last user is alwa
   assert.ok(output.indexOf('user: newest') < output.indexOf('assistant: L'));
 });
 
-test('omits complete old turns, retains all user images even when their text is omitted', () => {
+test('omitted source messages lose their images and count as omitted turns', () => {
   const image = { type: 'image', data: 'AA==', mimeType: 'image/png' };
   const messages = [row('a', 'user', 'ancient '.repeat(100)), row('b', 'assistant', 'old answer', 'a'),
     row('c', 'user', 'old image caption '.repeat(100), 'c', [image]), row('d', 'user', 'Latest user')];
   const output = renderHistory(messages, [{ budget: 1, edge: Infinity }]);
-  assert.match(plain(output), /^\[1 turns omitted\]/);
-  assert.match(plain(output), /user: \[\d+ tokens omitted\]/);
+  assert.match(plain(output), /^\[2 turns omitted\]/);
+  assert.doesNotMatch(plain(output), /old image caption|user: \[\d+ tokens omitted\]/);
   assert.match(plain(output), /user: Latest user/);
-  assert.deepEqual(output.content.filter((part) => part.type === 'image'), [image]);
+  assert.deepEqual(output.content.filter((part) => part.type === 'image'), []);
+});
+
+test('excerpts lose images, while intact messages in any tier and the latest user keep them', () => {
+  const image = data => ({ type: 'image', data, mimeType: 'image/png' });
+  const messages = [row('short', 'user', 'brief', 'short', [image('intact')]),
+    row('long', 'user', 'Long caption '.repeat(500), 'long', [image('truncated')]),
+    row('last', 'user', 'Latest caption '.repeat(100), 'last', [image('latest')])];
+  const output = renderHistory(messages, [{ budget: 1, edge: Infinity }, { budget: 200, edge: 10 }]);
+  assert.match(plain(output), /tokens omitted/);
+  assert.ok(plain(output).includes(messages[2].text));
+  assert.deepEqual(output.content.filter(p => p.type === 'image').map(p => p.data), ['intact', 'latest']);
+});
+
+test('intact user content preserves interleaved image positions and pure-image input', () => {
+  const sm = SessionManager.inMemory('/');
+  const a = { type: 'image', data: 'A', mimeType: 'image/png' };
+  const b = { type: 'image', data: 'B', mimeType: 'image/png' };
+  const parts = [{ type: 'text', text: 'Below:' }, a, { type: 'text', text: 'Above is A, below is B:' }, b];
+  const id = sm.appendMessage({ role: 'user', content: parts, timestamp: 1 });
+  const output = renderHistory(historyBetween(sm.getBranch(), null, id), [{ budget: 1, edge: Infinity }]);
+  assert.deepEqual(output.content, [{ type: 'text', text: 'user: ' }, ...parts, { type: 'text', text: '\n' }]);
+  const pure = sm.appendMessage({ role: 'user', content: [b], timestamp: 2 });
+  const pureOutput = renderHistory(historyBetween(sm.getBranch(), id, pure), [{ budget: 0, edge: Infinity }]);
+  assert.deepEqual(pureOutput.content.filter(p => p.type === 'image'), [b]);
 });
 
 test('source extraction preserves pure-image user messages and rejects unsupported user content', () => {

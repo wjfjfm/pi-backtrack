@@ -47,6 +47,27 @@ test('commit failure stops generation before reporting, without claiming rollbac
   await assert.rejects(f.tool().execute('bt', { checkpoint: 0, message: 'Again' }, undefined, undefined, f.ctx), /unavailable/);
 });
 
+test('reload publishes commit failure status exactly once without claiming rollback', async () => {
+  const f = fixture();
+  const result = await f.prepare();
+  const toolResult = { role: 'toolResult', toolCallId: 'bt', toolName: 'backtrack', isError: false, content: result.content, timestamp: 3 };
+  f.sm.appendMessage(toolResult);
+  f.failCommit();
+  f.hooks.get('turn_end')({ toolResults: [toolResult] }, f.ctx);
+  f.hooks.get('session_start')({ reason: 'reload' }, f.ctx);
+  f.hooks.get('session_start')({ reason: 'reload' }, f.ctx);
+  f.sm.appendMessage({ role: 'user', content: 'Continue', timestamp: 4 });
+  const messages = f.project();
+  const notices = messages.filter(m => m.customType === 'backtrack:commit-failed');
+  assert.equal(notices.length, 1);
+  assert.match(notices[0].content, /injected disk error/);
+  assert.match(notices[0].content, /last persisted effective context without replay/);
+  assert.match(notices[0].content, /Partial changes may remain/);
+  assert.ok(messages.indexOf(notices[0]) > messages.findIndex(m => m.role === 'toolResult'));
+  assert.equal(f.sm.getBranch().filter(e => e.customType === 'backtrack:block:v1'
+    && e.data.message.customType === 'backtrack:commit-failed').length, 1);
+});
+
 test('restart cancels an uncommitted prepared call, repairs missing tool pairing in the view, and never replays it', async () => {
   const f = fixture();
   await f.prepare();

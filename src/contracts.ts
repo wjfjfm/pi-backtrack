@@ -1,4 +1,3 @@
-import type { ContextMessage } from "pi-dynamic-skill/context";
 export type { BacktrackArguments } from "./schema.js";
 export const STATE = "backtrack:state:v1";
 export const BLOCK = "backtrack:block:v1";
@@ -14,10 +13,10 @@ export interface Checkpoint {
 export interface BacktrackState {
   version: 1;
   epoch: string;
-  revision: string;
   base: string | null;
   next: number;
-  inputKeys: string[];
+  /** Last consumed source node on the active session path, independent of context hooks. */
+  cursor: string | null;
   /** Immutable session-entry references; raw tool outputs are not copied into snapshots. */
   view: string[];
   checkpoints: Checkpoint[];
@@ -27,9 +26,7 @@ export interface PreparedBacktrack {
   id: string;
   callId: string;
   assistantId: string;
-  revision: string;
   epoch: string;
   target: number;
   message: string;
 }
-export type Message = ContextMessage;
