@@ -1,107 +1,127 @@
-# pi-backtrack
+# ⏪ pi-backtrack
 
-[English](README.md) | **简体中文**
+### 让Agent自主控制上下文，完成递归的思考和探索
 
-让 Agent 主动收起探索过程，以 checkpoint 为边界调整模型上下文并自动继续。**session 历史连续追加，不切换分支，不回滚文件或外部操作。**
+[English](README.md) · **简体中文** · [设计与实现](docs/design.md)
 
-## 使用
+探索一条支线，带回结论，收起过程，再继续主线。
 
-需要 Pi SDK 0.85.1 兼容环境（建议 Node 22.19+ 或 24+）。本地加载：
+不是等上下文塞满后被动压缩，而是让 Agent 自己决定：**哪些内容继续携带，何时回退，从哪里重新出发。**
 
-```sh
-npm ci
-pi -e ./src/index.ts
+```text
+主线 ──────●───────────────────────────────▶ 继续推进
+           │                              ▲
+           └─ 探索 ──●─ 更深的探索 ── 结论 ─┘
+                     └─ 试错 → 带回经验 ↗
+           checkpoint          backtrack
 ```
 
-同时启用配套的 dynamic-skill 扩展：
+**感知水位 · 自主回退 · 自动续跑 · 知识复用**
 
-```sh
-pi -e ./src/index.ts -e ./node_modules/pi-dynamic-skill/src/index.ts
+## 01 / 原理：给 Agent 一张上下文地图
+
+在 **user input** 和 **tool result** 后注入 checkpoint 与上下文仪表，让 Agent 在每个交互边界感知当前上下文状态，并自主决定是否回退、回退到哪个位点。并行工具调用以**完整工具批次**为边界，而不是每条结果分别打点。
+
+```text
+user input
+  └─ [checkpoint 1 | context 12K/200K 6%]
+
+Agent → tool calls → tool results
+  └─ [checkpoint 2 | context 48K/200K 24%]
+
+Agent → 继续探索，或 backtrack(checkpoint: 1)
 ```
 
-两个功能独立；仅安装包依赖不会自动启用另一个扩展。也可使用单独安装的兼容 dynamic-skill 扩展，勿重复加载两份。
+*以上为示意数值。仪表是 token 估算，不是最终请求的精确计量。*
+
+回退时，保留目标 checkpoint 及之前的**当前有效上下文**，收起后续工具过程，追加分层对话历史与 Agent 的交接信息，然后在同一轮执行中自动继续：
+
+```text
+回退前   保留前缀 │ 大量读取、搜索、工具输出、试错过程
+回退后   保留前缀 │ 精简对话历史 + 交接信息 → 新 checkpoint → 继续
+```
+
+- **Agent 决定路径**：可以逐层探索、逐层返回，不必等到上下文溢出。
+- **不额外调用模型做摘要**：backtrack 以确定性规则保留、截取对话，Agent 自己写交接。
+- **收起上下文，不撤销工作**：原始 session 历史仍连续保留；不切换分支，不回滚文件或外部操作。
+
+## 02 / 工具：一个调用，返回主线
 
 ```js
 backtrack({
-  checkpoint: 2,
-  message: "checkpoint 2 之后读取了连接池实现和超时日志，增加诊断日志并复现了问题。确认连接池正常；调大连接池未解决超时，不再沿此方向尝试。诊断日志改动尚未提交。回退后检查 retry.ts 的重试与取消逻辑。"
+  checkpoint: 1,
+  message: "已读连接池实现并添加诊断，确认瓶颈不在连接池；扩容无效。保留诊断改动，接下来检查重试逻辑。"
 })
 ```
 
-工具说明引导主动管理上下文，并在用户明显转移话题、或完成支线工作返回主线时先回退。启动及 reload 时，宿主仅在 dynamic-skill 上下文服务已启用时加入技能保存指引；仅安装依赖不会加入这段，不让模型自行判断是否启用。
+只有两个参数：`checkpoint` 指定返回位点；`message` 交接做过什么、看过什么、结论与试错教训，以及下一步。工具应独占调用批次，成功后自动续跑。返回 `0` 可从固定起点重建上下文，编号重新开始。
 
-只有 `checkpoint` 和 `message` 两个参数：
+## 03 / 安装：推荐搭配 dynamic-skill
 
-- `checkpoint`：目标编号；目标 checkpoint 及之前的当前有效上下文完整保留，不改写，也不恢复此前已收起的原始历史。
-- `message`：从目标 checkpoint 之后做过哪些事情、看过哪些内容、学到哪些经验、试错得到哪些教训，以及回退后的下一步计划。
+需要 Pi 0.85.1 兼容环境，建议 Node.js 22.19+ 或 24+。
 
-旧 `description` / `knowledge` 参数会被明确拒绝，不再自动创建会话知识目录。启用 dynamic-skill 时，回退前保存可复用的知识和经验教训。技能目录不自动展开正文，因此关键信息需在 message 中重复强调，或加入“读取 xxx skill 获取 xxx 信息”的指引。
+**一起安装：一个管理上下文，一个保存可复用知识。**
 
-## Checkpoint 与续跑
-
-```text
-稳定前缀 → checkpoint 0 → skills → user → checkpoint 1
-→ assistant(tool calls) → 完整工具批次结果 → checkpoint 2
-→ assistant(最终回复) → 下一条 user → checkpoint 3
+```sh
+pi install git:github.com/wjfjfm/pi-backtrack
+pi install git:github.com/wjfjfm/pi-dynamic-skill
 ```
 
-- 0 是固定起点，位于初始技能块之前；初始技能块不随后续用户输入移动。
-- 真实用户输入后、整个工具批次结束后建立 checkpoint。assistant 纯文本回复、Host 注入和请求重试不单独编号。
-- 普通回退保留前缀，编号沿当前轮次继续；回退到 0 类似 compact，收起 0 后的内容，替换旧技能投影并生成一份完整目录，编号从 1 重新开始。0 前的稳定前缀不变，不重载 system、工具或原生 skills，也不额外维护 KV Cache。内部轮次避免旧调用命中新编号。
-- 工具必须独占批次。execute 返回 prepared，Host 在完整批次落盘后的 turn_end 提交变换；同一 Agent 循环自然继续，不需要用户再次输入。
-- 新输入、排队消息、取消或失效目标会阻止未提交的回退。部分提交失败时停止继续执行并报告，不自动重放。
+在已有会话中执行 `/reload`，或启动新会话。只需要上下文回退时，执行第一条即可；backtrack 可以独立使用。
 
-回退后的有效上下文：
+<details>
+<summary>从本地源码运行</summary>
 
-```text
-保留前缀 → 技能差分/重建目录 → 分层对话历史 → message → 新 checkpoint
+```sh
+git clone https://github.com/wjfjfm/pi-backtrack.git
+cd pi-backtrack
+npm ci
+
+# 同时加载 backtrack 与随包提供的 dynamic-skill 快照
+pi -e ./src/index.ts -e ./node_modules/pi-dynamic-skill/src/index.ts
 ```
 
-与 `/tree` 一样，先定位保存的节点，保留其有效前缀，再追加专属交接输入；区别是不移动 session leaf，也不创建新 session。原始工具过程保留在 session 中，但不再进入后续模型请求。原始节点游标与扩展的临时请求注入分开管理，不通过整段请求一致性比较来批准或拒绝回退。投影、marker 和历史块按不可变 entry 引用持久化，避免复制大型工具输出；支持非持久化会话。
+仅加载 backtrack：`pi -e ./src/index.ts`。安装 npm 依赖本身不会启用配套扩展；若已全局启用 dynamic-skill，不要再加载第二份。
 
-## 对话历史与容量
+</details>
 
-从原始 session 的回退区间提取所有 user/assistant 正文，包括此前嵌套回退的原始对话，再从后往前分层：
+## 04 / 配合：上下文可以收起，经验不必丢掉
 
-| 输出预算（估算 tokens） | 保留方式 |
-| --- | --- |
-| 5K | 原文 |
-| 3K | 每条首尾各 100 tokens |
-| 1K | 每条首尾各 20 tokens |
-| 1K | 每条首尾各 10 tokens |
-| 更早 | 整轮省略标记 |
+[**pi-dynamic-skill**](https://github.com/wjfjfm/pi-dynamic-skill) 把可复用的知识保存为文件化技能，让探索不止留下本次任务的答案。
 
-消息放不进当前层就整条降级，不拆开跨层。最后一轮 user 全文保留；图片仅随完整原文消息保留，截短或省略的消息不保图。完整有图消息维持原始图文交错顺序；保留图片的容量单独估算。无额外模型摘要调用。空区间不注入历史块或空标题。
+| | pi-backtrack | pi-dynamic-skill |
+| --- | --- | --- |
+| 关注什么 | 当前模型需要携带哪些上下文 | 哪些经验值得保存、再次发现 |
+| 如何工作 | checkpoint → 回退 → 交接续跑 | SKILL.md → LRU 管理 → 按需读取 |
+| 留下什么 | 有效前缀与继续工作的线索 | 可跨会话复用的知识文件 |
 
 ```text
-[12 turns omitted]
-user: beginning[800 tokens omitted]ending
-assistant: beginning[2.4K tokens omitted]ending
+探索 → 总结经验 → write / edit 保存 skill → backtrack
+                                              ↓
+继续任务 ← 按需读取 skill 正文 ← 活跃技能名称、描述与路径
 ```
 
-中英文、数字和符号分类估算 token；首尾截取不切坏 Unicode grapheme。大于 2000 的省略数量采用 K。
+同时启用后，Agent 会收到**回退前保存知识**的指引；成功回退会结算技能访问，并补充尚未出现在保留上下文中的技能描述。它不会自动展开技能正文，因此关键结论仍应写进 `message`，或明确提示“读取 xxx skill 获取 xxx 信息”。
 
-工具说明建议简短任务维持 0-20%、标准任务 0-40%、困难任务 0-80% 的上下文水位。checkpoint 只标 `context …`：仅估算受管有效视图、system 和 active tools，不包含其他扩展临时注入，不是最终请求实测。它们不是硬门槛；回退后 token 不减反增也允许，真实超窗交给宿主 compact。
+也可以用 `/dynamic-skill` 手工挑选：默认查看 **LRU**，**Tab** 切换 **All** 多级目录，**Space** 勾选，**Enter** 应用。新增项下一模型 turn 注入；取消项静默等待下次 backtrack、compact 或 reload 移出队列。**淘汰不删除技能文件。**
 
-## Dynamic-skill 配合
+---
 
-- 成功回退触发一次访问结算，统计真实 session 历史，而不是裁剪后的模型消息。
-- 仅注入 active/pending 元数据，不再展示 Root Skills；读取 dynamic-skill 根技能即可发现子技能索引。保留上下文中已经有描述的技能不重复打印 active/pending。
-- 描述仍可见的溢出候选留在 active，允许超过容量；不能先移入 pending 再隐藏提示。
-- 仅实际展示的 pending 记为已预告。回退到 0 重建目录，但不清空 LRU 或删除文件。
-- 使用 `pi-dynamic-skill/context` 的版本化服务接口；事件总线只用于同步发现服务，prepare/commit 错误直接传播，不依赖扩展加载顺序。
+<details>
+<summary>边界与实现细节</summary>
 
-## 当前 SDK 适配边界
+- checkpoint 0 是固定起点；普通回退延续编号，回退到 0 重建技能目录并从 1 开始。不会恢复此前已收起的原始工具过程。
+- 对话按由近到远的预算分层：5K 原文、3K 首尾各 100 tokens、1K 首尾各 20、1K 首尾各 10，更早轮次省略。最新用户输入全文保留。图片仅随完整原文消息保留。
+- 水位估算包含有效视图、system 与 active tools，不包含其他扩展的临时注入。回退不保证 token 数必然下降，真实超窗仍由宿主 compact 处理。
+- **Pi 0.85.1 compact 适配**：将有效对话交给宿主摘要器，不保留原始 raw tail，避免复活已回退的工具过程。这会改变 `keepRecentTokens` 的原样保尾效果，compact 后也不保留原图。backtrack 本身不增加摘要调用。
+- 新输入、取消或失效目标会阻止未提交的回退。持久化失败会停止执行并报告，不声称已回滚。兼容两种扩展加载顺序，不承诺任意第三方上下文重排。
 
-Pi 0.85.1 的原生 compact 从原始历史准备摘要，并按原始 entry ID 保留尾部，不能直接消费扩展投影。为避免复活已回退的工具过程，本扩展在 compact hook 中将**有效对话（排除可重建的 checkpoint 和技能目录）**交给宿主原有摘要器，并不保留原始 raw tail。仍只有宿主本次 compact 的摘要调用，使用其取消、重试和 usage 逻辑。compact 后重新生成 checkpoint。
+更多内容见 [设计与实现](docs/design.md)，配套依赖快照见 [vendor/README.md](vendor/README.md)。
 
-这会改变原生 `keepRecentTokens` 的保留效果，是当前版本的重要适配选择。宿主进行文本摘要；当前没有保留原文尾部，因此 compact 后也不保留原图，不设独立图片保留区。恢复到有原生物化有效尾部接口的 SDK 后，可再保留准确的有效尾部。详见 [设计及实现记录](docs/design.md)。
+</details>
 
-节点引用缺失、数据损坏或持久化失败仍会停止请求，不静默退回原始长历史。其他 context hook 的固定前缀／后缀注入已覆盖两种加载顺序；不承诺任意第三方消息改写或重排的通用兼容。compact 取消时，已完成的新边界仍保留 checkpoint，不再消费消息后漏掉编号。旧快照捕获的外部 custom 前缀按出现次数匹配，避免重复注入，不改写原保留前缀。提交失败后的恢复为该事务补充一次模型可见的失败说明，不声称已回滚。
-
-## 依赖与开发
-
-配套依赖快照保存在 `vendor/`，使两个尚未发布的新实现可以独立安装，不要求相邻工作区或远端未发布提交。更新方式见 `vendor/README.md`。未来发布时可替换为不可变 Git 提交依赖。
+<details>
+<summary>开发与测试</summary>
 
 ```sh
 npm ci
@@ -109,4 +129,6 @@ npm run typecheck
 npm test
 ```
 
-测试先编译 TypeScript，再使用 Node 测试运行器；无需原生 TS strip 标志或模型凭据。覆盖真实 SDK 工具循环、自动续跑、两种加载顺序、知识保存/读取、恢复、取消、原生 compact 和超窗重试。
+覆盖真实 Pi SDK 工具循环、续跑、两种加载顺序、技能协作、取消、恢复、compact 和超窗重试。使用脚本 provider，无需模型凭据。
+
+</details>
