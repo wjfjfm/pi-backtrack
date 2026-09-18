@@ -73,6 +73,6 @@ dynamic-skill 通过追加上下文信息装载，KV-Cache 友好。使用 `/dyn
 
 ## Design reference
 
-- [设计与实现](docs/design.md)：checkpoint、上下文投影、分层历史、回退事务与 SDK 适配。
-- [pi-dynamic-skill](https://github.com/wjfjfm/pi-dynamic-skill)：技能树、LRU 与按需加载。
-- [协作协议](docs/skill-context-protocol.md)：可选服务、版本边界与独立集成测试。
+- [Kimi CLI / SendDMail](https://github.com/MoonshotAI/kimi-cli/tree/main/src/kimi_cli/tools/dmail)：支持 Agent 主动撰写交接摘要、回退并继续执行，同时将 checkpoint 编号注入上下文。
+- [pi-context](https://github.com/ttttmr/pi-context)：提供 timeline 历史展示，让 Agent 通过时间线定位节点并主动折叠，无需逐轮注入 checkpoint 编号。
+- [KorenKrita/pi-context](https://github.com/KorenKrita/pi-context)：在上游基础上增加上下文水位提示，为 Agent 判断折叠时机提供反馈。
