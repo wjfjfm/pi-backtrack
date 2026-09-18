@@ -203,15 +203,82 @@ test(`node navigation preserves external context injections (first=${injectionFi
   assert.deepEqual(host.errors, []);
 });
 
-test('backtrack with sibling tools is rejected; tools remain paired and history is unchanged', async (t) => {
+for (const backtrackFirst of [false, true]) test(`mixed tool batch commits after all successful results (${backtrackFirst})`, async (t) => {
+  let file;
+  const host = await setup(t, (n, context, { cwd }) => {
+    if (n === 1) {
+      file = join(cwd, 'saved.txt');
+      const calls = [call('write', { path: file, content: 'PERSISTED_SIDE_EFFECT' }, 'save'),
+        call('backtrack', { checkpoint: 0, message: 'Saved the result. Continue.' }, 'return')];
+      return backtrackFirst ? calls.reverse() : calls;
+    }
+    assert.equal(n, 2);
+    assert.match(flatten(context), /Saved the result/);
+    assert.doesNotMatch(flatten(context), /PERSISTED_SIDE_EFFECT/);
+    return [text('Done.')];
+  });
+  await host.session.prompt('Save and return.');
+  assert.equal(await readFile(file, 'utf8'), 'PERSISTED_SIDE_EFFECT');
+  const entries = host.session.sessionManager.getBranch();
+  const committed = entries.findIndex((e) => e.customType === 'backtrack:state:v1' && e.data.lastTransaction);
+  for (const id of ['save', 'return']) {
+    const result = entries.findIndex((e) => e.type === 'message' && e.message.role === 'toolResult' && e.message.toolCallId === id);
+    assert.ok(result >= 0 && committed > result, 'all results persist before commit');
+  }
+  assert.deepEqual(host.errors, []);
+});
+
+for (const backtrackFirst of [false, true]) test(`failed sibling prevents backtracking without undoing successful writes (${backtrackFirst})`, async (t) => {
+  let file;
+  const host = await setup(t, (n, context, { cwd }) => {
+    if (n === 1) {
+      file = join(cwd, 'keep.txt');
+      const calls = [call('write', { path: file, content: 'KEEP_THIS_WRITE' }, 'save'),
+        call('bash', { command: 'printf FAILED_SIBLING; exit 1' }, 'failure')];
+      const backtrack = call('backtrack', { checkpoint: 0, message: 'Must not apply' }, 'return');
+      return backtrackFirst ? [backtrack, ...calls] : [...calls, backtrack];
+    }
+    assert.equal(n, 2);
+    assert.match(flatten(context), /FAILED_SIBLING/);
+    assert.match(flatten(context), /Backtrack was not applied/);
+    return [text('Handle the failure.')];
+  });
+  await host.session.prompt('Run a failing batch.');
+  assert.equal(await readFile(file, 'utf8'), 'KEEP_THIS_WRITE');
+  const entries = host.session.sessionManager.getBranch();
+  assert.ok(entries.some((e) => e.customType === 'backtrack:cancelled:v1'));
+  assert.ok(!entries.some((e) => e.customType === 'backtrack:state:v1' && e.data.lastTransaction));
+  assert.deepEqual(host.errors, []);
+});
+
+test('multiple backtracks reject the batch requests without preventing sibling tools', async (t) => {
   const host = await setup(t, (n, context) => {
-    if (n === 1) return [call('backtrack', { checkpoint: 0, message: 'Nope' }, 'bad'), call('bash', { command: 'printf STILL_HERE' }, 'other')];
-    assert.match(flatten(context), /only tool call/);
+    if (n === 1) return [call('backtrack', { checkpoint: 0, message: 'First' }, 'one'),
+      call('bash', { command: 'printf STILL_HERE' }, 'other'), call('backtrack', { checkpoint: 0, message: 'Second' }, 'two')];
+    assert.match(flatten(context), /At most one backtrack/);
     assert.match(flatten(context), /STILL_HERE/);
     return [text('Recovered.')];
   });
-  await host.session.prompt('Check isolation.');
+  await host.session.prompt('Reject competing backtracks.');
   assert.equal(host.session.sessionManager.getBranch().some((entry) => entry.customType === 'backtrack:request:v1'), false);
+  assert.deepEqual(host.errors, []);
+});
+
+for (const reversed of [false, true]) skillTest(`same-batch skill write is settled before backtrack (${reversed})`, async (t) => {
+  let path;
+  const host = await setup(t, (n, context, { agentDir }) => {
+    if (n === 1) {
+      path = join(agentDir, 'skills', 'dynamic-skill', 'skills', 'saved', 'SKILL.md');
+      return [call('backtrack', { checkpoint: 0, message: 'Read the saved skill if needed.' }, 'return'),
+        call('write', { path, content: '---\nname: saved\ndescription: SAME_BATCH_SKILL\n---\nSAVED_BODY\n' }, 'save')];
+    }
+    assert.equal(n, 2);
+    assert.match(flatten(context), /SAME_BATCH_SKILL/);
+    assert.doesNotMatch(flatten(context), /SAVED_BODY/);
+    return [text('Done.')];
+  }, { dynamic: true, reversed });
+  await host.session.prompt('Save knowledge and backtrack.');
+  assert.match(await readFile(path, 'utf8'), /SAVED_BODY/);
   assert.deepEqual(host.errors, []);
 });
 

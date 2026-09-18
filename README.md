@@ -36,7 +36,7 @@ backtrack({
 })
 ```
 
-`checkpoint` selects the return point. `message` records work done, material examined, findings, failed attempts and lessons, and next steps. Call the tool alone in its batch.
+`checkpoint` selects the return point. `message` records work done, material examined, findings, failed attempts and lessons, and next steps. May share a batch with other tools, at most once per batch; backtracking applies after the whole batch succeeds.
 
 ## Install
 

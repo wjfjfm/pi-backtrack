@@ -25,12 +25,34 @@ function fixture() {
   sm.appendMessage({ role: 'user', content: 'Initial user', timestamp: 1 });
   const project = () => hooks.get('context')({ messages: buildSessionContext(sm.getBranch()).messages }, ctx).messages;
   project();
-  const prepare = async () => {
-    sm.appendMessage({ role: 'assistant', content: [{ type: 'toolCall', name: 'backtrack', id: 'bt', arguments: { checkpoint: 0, message: 'Continue' } }], timestamp: 2 });
+  const prepare = async (siblings = []) => {
+    sm.appendMessage({ role: 'assistant', content: [{ type: 'toolCall', name: 'backtrack', id: 'bt', arguments: { checkpoint: 0, message: 'Continue' } }, ...siblings], timestamp: 2 });
     return tool.execute('bt', { checkpoint: 0, message: 'Continue' }, undefined, undefined, ctx);
   };
   return { sm, hooks, notices, ctx, project, prepare, tool: () => tool, aborted: () => aborted, failCommit: () => { failCommit = true; } };
 }
+
+for (const reason of ['missing', 'duplicate', 'wrong-name', 'error', 'aborted', 'queued', 'input'])
+test(`mixed batch is cancelled on ${reason}`, async () => {
+  const f = fixture();
+  await f.prepare([{ type: 'toolCall', name: 'write', id: 'save', arguments: { path: '/unused', content: 'test' } }]);
+  const bt = { role: 'toolResult', toolCallId: 'bt', toolName: 'backtrack', isError: false, content: [], timestamp: 3 };
+  const sibling = { ...bt, toolCallId: 'save', toolName: 'write' };
+  let results = [bt, sibling];
+  if (reason === 'missing') results = [bt];
+  if (reason === 'duplicate') results = [bt, bt];
+  if (reason === 'wrong-name') sibling.toolName = 'read';
+  if (reason === 'error') sibling.isError = true;
+  if (reason === 'aborted') f.ctx.signal = AbortSignal.abort();
+  if (reason === 'queued') f.ctx.hasPendingMessages = () => true;
+  if (reason === 'input') f.hooks.get('input')({});
+  results.forEach((result) => f.sm.appendMessage(result));
+  f.hooks.get('turn_end')({ toolResults: results }, f.ctx);
+  f.hooks.get('turn_end')({ toolResults: results }, f.ctx);
+  const entries = f.sm.getBranch();
+  assert.equal(entries.filter((e) => e.customType === CANCELLED).length, 1);
+  assert.ok(!entries.some((e) => e.customType === STATE && e.data.lastTransaction));
+});
 
 test('commit failure stops generation before reporting, without claiming rollback or replaying the transaction', async () => {
   const f = fixture();

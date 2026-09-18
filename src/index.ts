@@ -97,8 +97,13 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
   pi.on("turn_end", (event, ctx) => {
     if (!pending) return;
     const request = pending;
-    const result = event.toolResults.find((item) => item.toolCallId === request.callId);
-    if (ctx.signal?.aborted || inputVersion !== requestedInputVersion || ctx.hasPendingMessages() || !result || result.isError) {
+    const assistant = ctx.sessionManager.getBranch().find((entry) => entry.id === request.assistantId);
+    const calls = assistant?.type === "message" && assistant.message.role === "assistant"
+      ? assistant.message.content.filter((part) => part.type === "toolCall") : [];
+    const batchSucceeded = calls.length > 0 && event.toolResults.length === calls.length
+      && calls.every((call) => event.toolResults.filter((result) => result.toolCallId === call.id
+        && result.toolName === call.name && !result.isError).length === 1);
+    if (ctx.signal?.aborted || inputVersion !== requestedInputVersion || ctx.hasPendingMessages() || !batchSucceeded) {
       cancel(ctx, "Cancelled, new input queued, or tool batch failed before commit");
       return;
     }
@@ -128,7 +133,8 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
       const assistant = branch.findLast((entry) => entry.type === "message" && entry.message.role === "assistant");
       if (assistant?.type !== "message" || assistant.message.role !== "assistant") throw new Error("Missing tool-calling assistant message.");
       const calls = assistant.message.content.filter((part) => part.type === "toolCall");
-      if (calls.length !== 1 || calls[0]?.id !== callId || calls[0].name !== "backtrack") throw new Error("backtrack must be the only tool call in its assistant batch. No context was changed.");
+      const backtracks = calls.filter((call) => call.name === "backtrack");
+      if (backtracks.length !== 1 || backtracks[0]?.id !== callId) throw new Error("At most one backtrack is allowed per tool batch. No context was changed.");
       if (branch.some((entry) => entry.type === "custom" && entry.customType === REQUEST
         && (entry.data as PreparedBacktrack).assistantId === assistant.id && (entry.data as PreparedBacktrack).callId === callId)) {
         throw new Error("This backtrack invocation has already been prepared or completed; it will not be replayed.");
