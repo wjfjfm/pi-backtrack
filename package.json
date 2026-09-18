@@ -18,9 +18,6 @@
     "build": "tsc -p tsconfig.build.json",
     "test": "npm run build && node --test test/*.test.mjs"
   },
-  "dependencies": {
-    "pi-dynamic-skill": "file:vendor/pi-dynamic-skill-0.0.0.tgz"
-  },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.85.1",
     "@earendil-works/pi-coding-agent": "0.85.1",

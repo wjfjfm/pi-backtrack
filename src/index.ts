@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { OWNER_CHANNEL, skillContextService } from "pi-dynamic-skill/context";
+import { OWNER_CHANNEL, skillContextService } from "./context.js";
 import { backtrackParameters, validateArguments } from "./schema.js";
 import { backtrackDescription, backtrackSkillDescription } from "./tool-description.js";
 import { BacktrackEngine } from "./engine.js";

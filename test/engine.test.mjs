@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { createEventBus, SessionManager, buildSessionContext } from '@earendil-works/pi-coding-agent';
 import { BacktrackEngine, latestState } from '../dist/engine.js';
 import { STATE, REQUEST, BLOCK } from '../dist/contracts.js';
-import { DYNAMIC_CONTEXT } from 'pi-dynamic-skill/context';
+import { DYNAMIC_CONTEXT } from '../dist/context.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

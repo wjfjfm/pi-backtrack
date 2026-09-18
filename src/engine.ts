@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { buildSessionContext, sessionEntryToContextMessages, type ExtensionAPI, type ExtensionContext, type SessionEntry, type SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent";
-import { DYNAMIC_CONTEXT, messageKey, skillContextService, type ContextMessage } from "pi-dynamic-skill/context";
+import { DYNAMIC_CONTEXT, messageKey, skillContextService, type ContextMessage } from "./context.js";
 import { BLOCK, STATE, REQUEST, CANCELLED, COMPACT_BOUNDARY, type BacktrackState, type Checkpoint, type PreparedBacktrack } from "./contracts.js";
 import { HISTORY_HEADER, historyBetween, renderHistory } from "./history.js";
 import { estimateMessages, formatCount } from "./tokens.js";

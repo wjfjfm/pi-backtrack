@@ -5,23 +5,18 @@
 [English](README.md) · **简体中文**
 
 ```text
-      |
-      v
-      o<--------------------- backtrack -------------------------+
-      |                                                          |
-      +--> explore --+                                           |
-      |              |                                           |
-      |              o<------- backtrack -------+                |
-      |              |                          |                |
-      |              +--> explore --------------+                |
-      |              |                                           |
-      |              o<------- backtrack -------+                |
-      |              |                          |                |
-      |              +--> explore --------------+                |
-      |              |                                           |
-      |              +-------------------------------------------+
-      |
-      v
+  │
+  │◀── backtrack ───────╮
+  │                     │
+  │◀── backtrack ─╮     │
+  ├──▶ explore ───╯     │
+  │                     │
+  │◀── backtrack ─╮     │
+  ├──▶ explore ───╯     │
+  │                     │
+  ├──▶ explore ─────────╯
+  │
+  ▼
 ```
 
 ## 原理
@@ -54,7 +49,7 @@ pi install git:github.com/wjfjfm/pi-backtrack
 pi install git:github.com/wjfjfm/pi-dynamic-skill
 ```
 
-执行 `/reload` 或启动新会话。backtrack 可独立使用，但推荐使用 pi-dynamic-skill 模块承载长期记忆。
+执行 `/reload` 或启动新会话。两个包独立安装、独立演进。backtrack 可独立使用，但推荐使用 pi-dynamic-skill 模块承载长期记忆。
 
 <details>
 <summary>本地运行</summary>
@@ -63,39 +58,21 @@ pi install git:github.com/wjfjfm/pi-dynamic-skill
 git clone https://github.com/wjfjfm/pi-backtrack.git
 cd pi-backtrack
 npm ci
-pi -e ./src/index.ts -e ./node_modules/pi-dynamic-skill/src/index.ts
+pi -e ./src/index.ts
 ```
 
-仅运行 backtrack 时去掉第二个 `-e`。若已全局启用 dynamic-skill，不要重复加载。
+配合本地 dynamic-skill 时，另加 `-e /path/to/pi-dynamic-skill/src/index.ts`，并在该项目中独立安装依赖。若已全局启用，不要重复加载。
 
 </details>
 
 ## dynamic-skill
 
-**Context 是工作集，skill 是长期记忆。**
+dynamic-skill 是使用 LRU 维护的 skill 动态装载器。以多层树状结构组织 skill，将 Agent 新创建或近期访问过的 skill 描述维护在上下文中，不常访问的被逐出活跃队列。
 
-```text
-           working context                     persistent skills
-      +------------------------+           +------------------------+
-      | explore -> findings    |-- save -->| SKILL.md               |
-      |                        |           | knowledge + procedures |
-      | checkpoint <- backtrack|<-- read --| lessons + failed paths |
-      +-----------+------------+           +------------------------+
-                  |
-                  v
-               continue
-```
-
-Agent 在回退前用 `write` / `edit` 固化结论、方法和失败路径。backtrack 收起探索过程；下一次遇到相关任务，再通过 `read` 取回知识，不必重走同一条支线。
-
-- **按需加载**：上下文只注入技能的名称、描述和路径，正文需要时再读。
-- **LRU 管理**：回退时结算访问，更新技能目录；技能离开队列，文件仍然保留。
-- **手工选择**：`/dynamic-skill` → Tab 切换 LRU / All → Space 勾选 → Enter 应用。
-
-技能文件跨会话复用，活跃队列按会话维护。
+dynamic-skill 通过追加上下文信息装载，KV-Cache 友好。使用 `/dynamic-skill` 查看或手动维护装载的 skill。
 
 ## Design reference
 
 - [设计与实现](docs/design.md)：checkpoint、上下文投影、分层历史、回退事务与 SDK 适配。
 - [pi-dynamic-skill](https://github.com/wjfjfm/pi-dynamic-skill)：技能树、LRU 与按需加载。
-- [依赖快照](vendor/README.md)：配套版本与更新方法。
+- [协作协议](docs/skill-context-protocol.md)：可选服务、版本边界与独立集成测试。

@@ -1,5 +1,5 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { ContextMessage } from "pi-dynamic-skill/context";
+import type { ContextMessage } from "./context.js";
 import { estimateText, excerpt, formatCount } from "./tokens.js";
 
 type UserMessage = Extract<ContextMessage, { role: "user" }>;

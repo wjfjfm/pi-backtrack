@@ -1,4 +1,4 @@
-import type { ContextMessage } from "pi-dynamic-skill/context";
+import type { ContextMessage } from "./context.js";
 
 /** Deliberately model-independent; all values are estimates, never provider usage. */
 export const TOKEN_WEIGHTS = Object.freeze({ cjk: 1.5, latinOrSpace: 0.25, symbol: 1, image: 1365 });

@@ -7,6 +7,10 @@ import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsMana
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
 import { backtrackDescription, backtrackSkillDescription } from '../dist/tool-description.js';
 
+// Optional integration suite: point to an independently installed companion.
+const skillExtension = process.env.PI_DYNAMIC_SKILL_EXTENSION;
+const skillTest = (name, fn) => test(name, { skip: skillExtension ? false : 'Set PI_DYNAMIC_SKILL_EXTENSION to test the optional companion' }, fn);
+
 const usage = { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const model = { id: 'test', name: 'test', api: 'openai-completions', provider: 'backtrack-test', baseUrl: 'http://unused.invalid', reasoning: false,
   input: ['text', 'image'], contextWindow: 100000, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
@@ -21,7 +25,7 @@ async function setup(t, respond, { dynamic = false, reversed = false, persisted 
   process.env.PI_CODING_AGENT_DIR = agentDir;
   t.after(async () => { if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; await rm(cwd, { recursive: true, force: true }); });
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: compaction, keepRecentTokens: 100, reserveTokens: 4096 }, retry: { enabled: false } });
-  const extensions = [resolve('src/index.ts'), ...(dynamic ? [resolve('node_modules/pi-dynamic-skill/src/index.ts')] : [])];
+  const extensions = [resolve('src/index.ts'), ...(dynamic ? [resolve(skillExtension)] : [])];
   if (reversed) extensions.reverse();
   if (injections) {
     const path = join(cwd, 'request-injections.mjs');
@@ -66,7 +70,7 @@ async function setup(t, respond, { dynamic = false, reversed = false, persisted 
 }
 
 for (const options of [{ dynamic: false }, { dynamic: true }, { dynamic: true, reversed: true }]) {
-  test(`tool description includes skill guidance only with the enabled service (${JSON.stringify(options)})`, async (t) => {
+  (options.dynamic ? skillTest : test)(`tool description includes skill guidance only with the enabled service (${JSON.stringify(options)})`, async (t) => {
     const expected = backtrackDescription + (options.dynamic ? `\n\n${backtrackSkillDescription}` : '');
     const host = await setup(t, (_n, context) => {
       const tool = context.tools.find(tool => tool.name === 'backtrack');
@@ -109,7 +113,7 @@ test('one prompt explores, backtracks in place, and automatically continues on t
   assert.equal(entries.filter((e) => e.type === 'custom' && e.customType === 'backtrack:state:v1').at(-1).data.lastTransaction !== undefined, true);
 });
 
-for (const reversed of [false, true]) test(`dynamic skills and checkpoint zero rebuild work in both extension orders (${reversed})`, async (t) => {
+for (const reversed of [false, true]) skillTest(`dynamic skills and checkpoint zero rebuild work in both extension orders (${reversed})`, async (t) => {
   const host = await setup(t, (n, context) => {
     const source = flatten(context);
     if (n === 1) {
@@ -131,7 +135,7 @@ for (const reversed of [false, true]) test(`dynamic skills and checkpoint zero r
 });
 
 for (const reversed of [false, true]) for (const lifecycle of ['backtrack', 'compact', 'reload'])
-test(`manual selection injects next turn and silently expires at ${lifecycle} (${reversed})`, async (t) => {
+skillTest(`manual selection injects next turn and silently expires at ${lifecycle} (${reversed})`, async (t) => {
   let shouldBacktrack = false;
   const host = await setup(t, () => {
     if (shouldBacktrack) {
@@ -178,7 +182,7 @@ test(`node navigation preserves external context injections (first=${injectionFi
     if (n === 2) return [call('backtrack', { checkpoint: target, message: 'Continue from the selected node.' }, 'navigate')];
     assert.doesNotMatch(source, /PRIVATE_TOOL_OUTPUT/);
     return [text('Finished without another user intervention. '.repeat(100))];
-  }, { injections: true, injectionFirst, persisted: true, dynamic: true });
+  }, { injections: true, injectionFirst, persisted: true, dynamic: !!skillExtension });
   await host.session.prompt('Explore and navigate. '.repeat(100));
   assert.equal(host.contexts.length, 3);
   const entries = host.session.sessionManager.getBranch();
@@ -235,7 +239,7 @@ test('native compact summarizes effective context, not removed tools; regenerate
   assert.deepEqual(host.errors, []);
 });
 
-for (const reversed of [false, true]) test(`compact regenerates checkpoints internally and settles skills once (${reversed})`, async (t) => {
+for (const reversed of [false, true]) skillTest(`compact regenerates checkpoints internally and settles skills once (${reversed})`, async (t) => {
   let compacting = false;
   const host = await setup(t, (_n, context) => {
     if (compacting) return [text('A fresh compacted baseline.')];
@@ -257,7 +261,7 @@ for (const reversed of [false, true]) test(`compact regenerates checkpoints inte
   assert.deepEqual(host.errors, []);
 });
 
-for (const reversed of [false, true]) test(`compact then repeated zero rebuild keeps one fresh directory and a stable prefix (${reversed})`, async (t) => {
+for (const reversed of [false, true]) skillTest(`compact then repeated zero rebuild keeps one fresh directory and a stable prefix (${reversed})`, async (t) => {
   let phase = 'initial', steps = 0, prefix, systemPrompt, tools, directoryContent;
   const host = await setup(t, (_n, context) => {
     if (phase === 'compact') {
@@ -326,7 +330,7 @@ for (const reversed of [false, true]) test(`compact then repeated zero rebuild k
   assert.deepEqual(host.errors, []);
 });
 
-for (const reversed of [false, true]) test(`root children are discovered on demand and enter active skills after backtrack (${reversed})`, async (t) => {
+for (const reversed of [false, true]) skillTest(`root children are discovered on demand and enter active skills after backtrack (${reversed})`, async (t) => {
   let root, child;
   const host = await setup(t, (n, context) => {
     assert.match(context.systemPrompt, /<name>dynamic-skill<\/name>/);
@@ -356,7 +360,7 @@ for (const reversed of [false, true]) test(`root children are discovered on dema
   assert.deepEqual(host.errors, []);
 });
 
-for (const reversed of [false, true]) test(`reload after aborted continuation shows new skill descriptions (${reversed})`, async (t) => {
+for (const reversed of [false, true]) skillTest(`reload after aborted continuation shows new skill descriptions (${reversed})`, async (t) => {
   let path;
   const host = await setup(t, (n, context) => {
     if (n === 1) return [call('backtrack', { checkpoint: 0, message: 'Continue.' }, 'bt')];
@@ -457,7 +461,7 @@ test('reload preserves a committed backtrack and keeps old tool output out of la
     assert.doesNotMatch(flatten(context), /ARCHIVED_SECRET/);
     assert.match(flatten(context), /Resume here/);
     return [text('Ready.')];
-  }, { persisted: true, dynamic: true });
+  }, { persisted: true, dynamic: !!skillExtension });
   await host.session.prompt('First request');
   const file = host.session.sessionManager.getSessionFile();
   assert.match(await readFile(file, 'utf8'), /ARCHIVED_SECRET/);
@@ -502,7 +506,7 @@ test('queued user input cancels a prepared backtrack rather than swallowing the 
   assert.equal(branch.some((e) => e.customType === 'backtrack:state:v1' && e.data.lastTransaction), false);
 });
 
-test('saved skills survive backtrack, are discovered once, and read bodies are folded on a later backtrack', async (t) => {
+skillTest('saved skills survive backtrack, are discovered once, and read bodies are folded on a later backtrack', async (t) => {
   let skill;
   const host = await setup(t, (n, context, { agentDir }) => {
     const source = flatten(context);
