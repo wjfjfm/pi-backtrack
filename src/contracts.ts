@@ -21,6 +21,13 @@ export interface BacktrackState {
   view: string[];
   checkpoints: Checkpoint[];
   lastTransaction?: string;
+  /** Display-only snapshot, committed with the effective view. */
+  usage?: BacktrackUsage;
+}
+export interface BacktrackUsage {
+  before: number;
+  after: number;
+  window?: number;
 }
 export interface PreparedBacktrack {
   id: string;
@@ -29,4 +36,6 @@ export interface PreparedBacktrack {
   epoch: string;
   target: number;
   message: string;
+  /** Immutable human-readable description of the target boundary. */
+  location?: string[];
 }

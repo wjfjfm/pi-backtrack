@@ -26,9 +26,9 @@ export function latestState(ctx: ExtensionContext): BacktrackState | undefined {
     const preceding = new Set(branch.slice(0, branch.indexOf(entry)).map((item) => item.id));
     cursor = sources(ctx).findLast((node) => preceding.has(node.id))?.id ?? null;
   }
-  const { epoch, base, next, view, checkpoints, lastTransaction } = data;
+  const { epoch, base, next, view, checkpoints, lastTransaction, usage } = data;
   return structuredClone({ version: 1, epoch, base, next, cursor, view, checkpoints,
-    ...(lastTransaction ? { lastTransaction } : {}) });
+    ...(lastTransaction ? { lastTransaction } : {}), ...(usage ? { usage } : {}) });
 }
 
 export class BacktrackEngine {
@@ -61,21 +61,25 @@ export class BacktrackEngine {
     state.view = service.project(ctx, messages).map((message) =>
       refs.get(messageKey(message))?.shift() ?? this.block(ctx, message));
   }
-  private checkpoint(ctx: ExtensionContext, state: BacktrackState, boundary: string | null, zero = false): void {
+  private estimate(ctx: ExtensionContext, messages: ContextMessage[]): number {
+    const active = this.pi.getActiveTools?.();
+    const tools = this.pi.getAllTools().filter((tool) => !active || active.includes(tool.name));
+    return estimateMessages(messages, ctx.getSystemPrompt(),
+      JSON.stringify(tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }))));
+  }
+  private checkpoint(ctx: ExtensionContext, state: BacktrackState, boundary: string | null, zero = false): number | null {
     if (!zero) this.skills(ctx, state);
     const id = zero ? 0 : state.next++;
     if (!Number.isSafeInteger(id)) throw new Error("Checkpoint number exhausted.");
     const window = ctx.model?.contextWindow;
-    const active = this.pi.getActiveTools?.();
-    const tools = this.pi.getAllTools().filter((tool) => !active || active.includes(tool.name));
-    const tokens = zero ? null : estimateMessages(this.messages(ctx, state), ctx.getSystemPrompt(),
-      JSON.stringify(tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }))));
+    const tokens = zero ? null : this.estimate(ctx, this.messages(ctx, state));
     const usage = tokens === null || !window ? "unknown" : `${formatCount(tokens)}/${formatCount(window)} ${Math.round(tokens / window * 100)}%`;
-    const message: ContextMessage = { role: "custom", customType: "backtrack:checkpoint", content: `[checkpoint ${id} | context ${usage}]`, display: false, timestamp: 0,
+    const message: ContextMessage = { role: "custom", customType: "backtrack:checkpoint", content: `backtrack-checkpoint ${id} context ${usage}`, display: false, timestamp: 0,
       details: { epoch: state.epoch, id, boundary, accuracy: tokens === null ? "unknown" : "estimated" } };
     const ref = this.block(ctx, message);
     state.view.push(ref);
     state.checkpoints.push({ id, ref, boundary });
+    return tokens;
   }
   private save(ctx: ExtensionContext, state: BacktrackState): void { this.append(ctx, STATE, state); }
 
@@ -221,6 +225,9 @@ export class BacktrackEngine {
     }
     const from = branch.findLast((entry) => entry.type === "message")?.id;
     if (!from) throw new Error("Missing completed tool batch.");
+    const nodes = sources(ctx);
+    const cursor = state.cursor === null ? -1 : nodes.findIndex((node) => node.id === state.cursor);
+    const before = this.estimate(ctx, [...this.messages(ctx, state), ...nodes.slice(cursor + 1).map((node) => node.message)]);
     const history = renderHistory(historyBetween(branch, target.boundary, from));
     const hasHistory = history.content.length > 0;
     if (hasHistory) history.content = [{ type: "text", text: HISTORY_HEADER },
@@ -236,7 +243,9 @@ export class BacktrackEngine {
     for (const message of prepared?.messages ?? []) state.view.push(this.block(ctx, message));
     if (hasHistory) state.view.push(this.block(ctx, history));
     state.view.push(this.block(ctx, { role: "custom", customType: "backtrack:continuation", content: `[Backtrack message — agent handoff]\n${request.message}`, display: true, timestamp: 0 }));
-    this.checkpoint(ctx, state, from);
+    // Reuse the continuation checkpoint's estimate, after its final skill projection.
+    const after = this.checkpoint(ctx, state, from)!;
+    state.usage = { before, after, ...(ctx.model ? { window: ctx.model.contextWindow } : {}) };
     state.cursor = from;
     state.lastTransaction = request.id;
     this.save(ctx, state);

@@ -84,7 +84,7 @@ Backtrack 让 Agent 在长程任务中主动收起已经消化的探索过程，
 普通 checkpoint marker 示例：
 
 ```text
-[checkpoint 20 | context 100K/300K 33%]
+backtrack-checkpoint 20 context 100K/300K 33%
 ```
 
 checkpoint 0 在同一有效上下文中只保留一个起点标记，不在每次请求或每次用户输入时重复追加。具体消息载体仍需确保起点锚点与普通检查点的语义可区分。
