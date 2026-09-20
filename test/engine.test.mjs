@@ -3,7 +3,8 @@ import { test } from 'node:test';
 import { createEventBus, SessionManager, buildSessionContext } from '@earendil-works/pi-coding-agent';
 import { BacktrackEngine, latestState } from '../dist/engine.js';
 import { STATE, REQUEST, BLOCK } from '../dist/contracts.js';
-import { DYNAMIC_CONTEXT } from '../dist/context.js';
+import { DYNAMIC_CONTEXT, SERVICE_CHANNEL } from '../dist/context.js';
+import { estimateMessages, formatCount } from '../dist/tokens.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,6 +27,24 @@ function apply(engine, ctx, sm, checkpoint, id = 'bt') {
   engine.apply(ctx, request);
   return request;
 }
+
+test('committed display usage matches continuation checkpoint after final skill projection', () => {
+  const { sm, pi, ctx, engine } = fixture();
+  let committed = false;
+  const skillMessage = { role: 'custom', customType: DYNAMIC_CONTEXT, content: 'Late skill projection '.repeat(500), display: false, timestamp: 0 };
+  pi.events.on(SERVICE_CHANNEL, ({ accept }) => accept({
+    project: (_ctx, messages) => committed && !messages.some((m) => m.customType === DYNAMIC_CONTEXT) ? [...messages, skillMessage] : messages,
+    prepare: () => ({ messages: [], commit() { committed = true; } }),
+  }));
+  sm.appendMessage({ role: 'user', content: 'Investigate', timestamp: 1 });
+  engine.sync(ctx);
+  apply(engine, ctx, sm, 0);
+  const state = latestState(ctx);
+  const view = engine.messages(ctx, state);
+  assert.ok(view.some((m) => m.customType === DYNAMIC_CONTEXT));
+  assert.equal(state.usage.after, estimateMessages(view.slice(0, -1), ctx.getSystemPrompt(), '[]'));
+  assert.ok(view.at(-1).content.includes(`context ${formatCount(state.usage.after)}/`));
+});
 
 test('checkpoint generation is idempotent and batches stay paired, assistant-only replies have no checkpoint', () => {
   const { sm, ctx, engine } = fixture();
@@ -336,7 +355,7 @@ test('checkpoint labels stay concise and estimates do not discard external injec
     ...buildSessionContext(sm.getBranch()).messages];
   const view = engine.project(ctx, input);
   const marker = view.find(m => m.customType === 'backtrack:checkpoint' && m.details.id === 1);
-  assert.match(marker.content, /^\[checkpoint 1 \| context [\d.]+K?\/[\d.]+K? \d+%\]$/);
+  assert.match(marker.content, /^backtrack-checkpoint 1 context [\d.]+K?\/[\d.]+K? \d+%$/);
   assert.doesNotMatch(marker.content, /managed|~/);
   assert.equal(marker.details.accuracy, 'estimated');
   const before = marker.content;

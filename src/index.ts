@@ -5,9 +5,11 @@ import { backtrackParameters, validateArguments } from "./schema.js";
 import { backtrackDescription, backtrackSkillDescription } from "./tool-description.js";
 import { BacktrackEngine } from "./engine.js";
 import { CANCELLED, REQUEST, type PreparedBacktrack } from "./contracts.js";
+import { BacktrackRenderer, boundaryLocation } from "./render.js";
 
 export default function registerBacktrack(pi: ExtensionAPI): void {
   const engine = new BacktrackEngine(pi);
+  const renderer = new BacktrackRenderer();
   let pending: PreparedBacktrack | undefined;
   let inputVersion = 0;
   let requestedInputVersion = 0;
@@ -27,6 +29,7 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
       warn(ctx, `[backtrack] Could not persist cancellation: ${String(error)}. Stopped without replay.`);
       return;
     }
+    renderer.refresh(ctx);
     warn(ctx, `[backtrack] ${reason}`);
     pi.sendMessage({ customType: "backtrack:cancelled", content: `Backtrack was not applied: ${reason}. Continue on the current path.`, display: true });
   };
@@ -34,7 +37,7 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
     const value = request as { accept?: (owner: { current(ctx: ExtensionContext): ReturnType<BacktrackEngine["current"]> }) => void } | undefined;
     value?.accept?.({ current: (ctx) => engine.current(ctx) });
   });
-  pi.on("session_shutdown", () => { unsubscribe(); pending = undefined; });
+  pi.on("session_shutdown", () => { unsubscribe(); pending = undefined; renderer.clear(); });
   pi.on("input", () => { inputVersion++; });
   pi.on("session_start", (_event, ctx) => {
     // All extensions have loaded: resolve the optional service in either order.
@@ -59,6 +62,7 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
       }
       if (!completed && !cancelled) { pending = data; cancel(ctx, "Prepared backtrack interrupted by session restart; no automatic replay"); }
     }
+    renderer.refresh(ctx);
   });
   pi.on("session_before_compact", (event, ctx) => {
     try {
@@ -70,7 +74,7 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
     }
   });
   pi.on("session_before_tree", (_event, ctx) => { cancel(ctx, "Session tree navigation interrupted backtrack"); });
-  pi.on("session_tree", () => { stopped = false; });
+  pi.on("session_tree", (_event, ctx) => { stopped = false; renderer.refresh(ctx); });
   pi.on("session_compact", (_event, ctx) => {
     try {
       // The shared compaction entry ID makes this safe in either extension order.
@@ -119,12 +123,16 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
       try { pi.appendEntry(CANCELLED, { id: request.id, reason: String(error), phase: "commit-failed" }); }
       catch (recordError) { warn(ctx, `[backtrack] Could not persist failure details: ${String(recordError)}`); }
       warn(ctx, `[backtrack] Commit did not finish: ${String(error)}. No automatic replay; inspect and reload.`);
+    } finally {
+      renderer.refresh(ctx);
     }
   });
   const registerTool = () => pi.registerTool({
     name: "backtrack", label: "Backtrack",
     description: backtrackDescription + (skillContextService(pi) ? `\n\n${backtrackSkillDescription}` : ""),
     parameters: backtrackParameters,
+    renderCall: renderer.renderCall,
+    renderResult: renderer.renderResult,
     async execute(callId, args, signal, _onUpdate, ctx) {
       validateArguments(args);
       if (signal?.aborted) throw new Error("Backtrack cancelled.");
@@ -139,12 +147,14 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
         && (entry.data as PreparedBacktrack).assistantId === assistant.id && (entry.data as PreparedBacktrack).callId === callId)) {
         throw new Error("This backtrack invocation has already been prepared or completed; it will not be replayed.");
       }
-      const { state } = engine.validate(ctx, args.checkpoint);
+      const { state, target } = engine.validate(ctx, args.checkpoint);
       const request: PreparedBacktrack = { id: randomUUID(), callId, assistantId: assistant.id,
-        epoch: state.epoch, target: args.checkpoint, message: args.message };
+        epoch: state.epoch, target: args.checkpoint, message: args.message,
+        location: boundaryLocation(branch, target.boundary, args.checkpoint) };
       requestedInputVersion = inputVersion;
       pi.appendEntry(REQUEST, request);
       pending = request;
+      renderer.refresh(ctx);
       return { content: [{ type: "text", text: "Backtrack prepared. The host will apply it after this complete tool batch, then continue automatically. Files and external actions are unchanged." }],
         details: { transactionId: request.id, status: "prepared" } };
     },
