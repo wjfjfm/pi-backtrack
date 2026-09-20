@@ -40,7 +40,7 @@ backtrack({
 
 ## Install
 
-Requires a Pi 0.85.1-compatible environment. Node.js 22.19+ or 24+ is recommended.
+Developed with Pi SDK 0.85.1 and Node.js 22.17.0.
 
 ```sh
 pi install git:github.com/wjfjfm/pi-backtrack
