@@ -46,12 +46,6 @@ Developed with Pi SDK 0.85.1 and Node.js 22.17.0.
 pi install git:github.com/wjfjfm/pi-backtrack
 ```
 
-Backtrack works independently, but [pi-dynamic-skill](https://github.com/wjfjfm/pi-dynamic-skill) is recommended for long-term memory. Before backtracking, the agent autonomously uses dynamic-skill to save useful knowledge from the context about to be folded away.
-
-```sh
-pi install git:github.com/wjfjfm/pi-dynamic-skill
-```
-
 Run `/reload` or start a new session.
 
 <details>
@@ -64,15 +58,7 @@ npm ci
 pi -e ./src/index.ts
 ```
 
-To use a local dynamic-skill checkout, install its dependencies separately and add `-e /path/to/pi-dynamic-skill/src/index.ts`. Do not load another copy if it is already enabled globally.
-
 </details>
-
-## dynamic-skill
-
-dynamic-skill is an LRU-managed dynamic skill loader. It organizes skills in a multi-level tree, keeps descriptions of agent-created or recently accessed skills in context, and evicts infrequently accessed skills from the active queue.
-
-Skills are loaded through append-only context updates, keeping the KV cache reusable. Use `/dynamic-skill` to inspect or manually manage loaded skills.
 
 ## Design reference
 

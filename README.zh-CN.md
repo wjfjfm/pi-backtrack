@@ -46,12 +46,6 @@ backtrack({
 pi install git:github.com/wjfjfm/pi-backtrack
 ```
 
-backtrack 可独立使用，但推荐使用 [pi-dynamic-skill](https://github.com/wjfjfm/pi-dynamic-skill) 模块承载长期记忆。在 backtrack 前，Agent 会自主通过 dynamic-skill 记录即将被回退的上下文中有用的知识。
-
-```sh
-pi install git:github.com/wjfjfm/pi-dynamic-skill
-```
-
 执行 `/reload` 或启动新会话。
 
 <details>
@@ -64,15 +58,7 @@ npm ci
 pi -e ./src/index.ts
 ```
 
-配合本地 dynamic-skill 时，另加 `-e /path/to/pi-dynamic-skill/src/index.ts`，并在该项目中独立安装依赖。若已全局启用，不要重复加载。
-
 </details>
-
-## dynamic-skill
-
-dynamic-skill 是使用 LRU 维护的 skill 动态装载器。以多层树状结构组织 skill，将 Agent 新创建或近期访问过的 skill 描述维护在上下文中，不常访问的被逐出活跃队列。
-
-dynamic-skill 通过追加上下文信息装载，KV-Cache 友好。使用 `/dynamic-skill` 查看或手动维护装载的 skill。
 
 ## Design reference
 
