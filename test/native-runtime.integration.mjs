@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test } from 'vitest';
 import { mkdtemp, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
-import { backtrackDescription, backtrackSkillDescription } from '../dist/tool-description.js';
+import { backtrackDescription } from '../src/tool-description.ts';
+import { latestState } from '../src/engine.ts';
 
-// Optional integration suite: point to an independently installed companion.
-const skillExtension = process.env.PI_DYNAMIC_SKILL_EXTENSION;
-const skillTest = (name, fn) => test(name, { skip: skillExtension ? false : 'Set PI_DYNAMIC_SKILL_EXTENSION to test the optional companion' }, fn);
+// Cross-extension integration only; neither product imports the companion.
+const skillExtension = process.env.PI_DYNAMIC_SKILL_EXTENSION || resolve('../pi-dynamic-skill/src/index.ts');
+const skillTest = test;
 
 const usage = { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const model = { id: 'test', name: 'test', api: 'openai-completions', provider: 'backtrack-test', baseUrl: 'http://unused.invalid', reasoning: false,
@@ -23,7 +24,7 @@ async function setup(t, respond, { dynamic = false, reversed = false, persisted 
   const agentDir = join(cwd, 'agent');
   const previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = agentDir;
-  t.after(async () => { if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; await rm(cwd, { recursive: true, force: true }); });
+  t.onTestFinished(async () => { if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; await rm(cwd, { recursive: true, force: true }); });
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: compaction, keepRecentTokens: 100, reserveTokens: 4096 }, retry: { enabled: false } });
   const extensions = [resolve('src/index.ts'), ...(dynamic ? [resolve(skillExtension)] : [])];
   if (reversed) extensions.reverse();
@@ -44,10 +45,11 @@ async function setup(t, respond, { dynamic = false, reversed = false, persisted 
   assert.deepEqual(loader.getExtensions().errors, []);
   const sessionManager = persisted ? SessionManager.create(cwd, join(cwd, 'sessions')) : SessionManager.inMemory(cwd);
   const { session } = await createAgentSession({ cwd, agentDir, settingsManager, resourceLoader: loader, sessionManager, model });
-  t.after(() => session.dispose());
+  t.onTestFinished(() => session.dispose());
   const errors = [];
   await session.bindExtensions({ onError: (error) => errors.push(error) });
-  const contexts = [];
+  const contexts = [], compactions = [];
+  session.subscribe(event => { if (event.type === 'compaction_end') compactions.push(event); });
   session.agent.streamFunction = (_model, context, options) => {
     contexts.push(JSON.parse(JSON.stringify(context)));
     const response = options?.signal?.aborted ? { aborted: true }
@@ -62,16 +64,16 @@ async function setup(t, respond, { dynamic = false, reversed = false, persisted 
     stream.end();
     return stream;
   };
-  t.after(() => {
+  t.onTestFinished(() => {
     const failures = session.messages.filter((m) => m.role === 'assistant' && m.stopReason === 'error');
     assert.deepEqual(failures.map((m) => m.errorMessage), []);
   });
-  return { cwd, agentDir, session, contexts, errors, loader };
+  return { cwd, agentDir, session, contexts, errors, loader, compactions };
 }
 
 for (const options of [{ dynamic: false }, { dynamic: true }, { dynamic: true, reversed: true }]) {
-  (options.dynamic ? skillTest : test)(`tool description includes skill guidance only with the enabled service (${JSON.stringify(options)})`, async (t) => {
-    const expected = backtrackDescription + (options.dynamic ? `\n\n${backtrackSkillDescription}` : '');
+  (options.dynamic ? skillTest : test)(`tool description is independent of companion presence (${JSON.stringify(options)})`, async (t) => {
+    const expected = backtrackDescription;
     const host = await setup(t, (_n, context) => {
       const tool = context.tools.find(tool => tool.name === 'backtrack');
       assert.equal(tool.description, expected);
@@ -110,7 +112,7 @@ test('one prompt explores, backtracks in place, and automatically continues on t
   const entries = host.session.sessionManager.getEntries();
   assert.match(JSON.stringify(entries), /SECRET_TOOL_OUTPUT/);
   assert.equal(entries.some((e) => e.type === 'branch_summary'), false);
-  assert.equal(entries.filter((e) => e.type === 'custom' && e.customType === 'backtrack:state:v1').at(-1).data.lastTransaction !== undefined, true);
+  assert.ok(entries.some(e => e.type === 'backtrack'));
 });
 
 for (const reversed of [false, true]) skillTest(`dynamic skills and checkpoint zero rebuild work in both extension orders (${reversed})`, async (t) => {
@@ -118,7 +120,7 @@ for (const reversed of [false, true]) skillTest(`dynamic skills and checkpoint z
     const source = flatten(context);
     if (n === 1) {
       assert.ok(source.indexOf('checkpoint 0') < source.indexOf('Dynamic skills'));
-      assert.ok(source.indexOf('Dynamic skills') < source.indexOf('Initial user prompt'));
+      assert.ok(source.indexOf('Initial user prompt') < source.indexOf('Dynamic skills'), 'before_agent_start messages follow the native user entry');
       return [call('backtrack', { checkpoint: 0, message: 'Continue after a fresh start.' }, 'reset')];
     }
     assert.equal(n, 2);
@@ -186,11 +188,11 @@ test(`node navigation preserves external context injections (first=${injectionFi
   await host.session.prompt('Explore and navigate. '.repeat(100));
   assert.equal(host.contexts.length, 3);
   const entries = host.session.sessionManager.getBranch();
-  assert.equal(entries.filter((entry) => entry.customType === 'backtrack:request:v1').length, 1);
+  assert.equal(entries.filter((entry) => entry.type === 'backtrack').length, 1);
   assert.equal(entries.some((entry) => entry.customType === 'backtrack:cancelled:v1'), false);
   assert.doesNotMatch(JSON.stringify(entries), /FIXED_EXTERNAL_PREFIX|REQUEST_LOCAL_SUFFIX/,
     'request-local additions must not become persistent source history');
-  const frame = entries.findLast((entry) => entry.customType === 'backtrack:state:v1').data;
+  const frame = latestState({ sessionManager: host.session.sessionManager });
   assert.equal(typeof frame.cursor, 'string');
   assert.equal('inputKeys' in frame, false);
   assert.equal('revision' in frame, false);
@@ -220,7 +222,7 @@ for (const backtrackFirst of [false, true]) test(`mixed tool batch commits after
   await host.session.prompt('Save and return.');
   assert.equal(await readFile(file, 'utf8'), 'PERSISTED_SIDE_EFFECT');
   const entries = host.session.sessionManager.getBranch();
-  const committed = entries.findIndex((e) => e.customType === 'backtrack:state:v1' && e.data.lastTransaction);
+  const committed = entries.findIndex((e) => e.type === 'backtrack');
   for (const id of ['save', 'return']) {
     const result = entries.findIndex((e) => e.type === 'message' && e.message.role === 'toolResult' && e.message.toolCallId === id);
     assert.ok(result >= 0 && committed > result, 'all results persist before commit');
@@ -240,14 +242,14 @@ for (const backtrackFirst of [false, true]) test(`failed sibling prevents backtr
     }
     assert.equal(n, 2);
     assert.match(flatten(context), /FAILED_SIBLING/);
-    assert.match(flatten(context), /Backtrack was not applied/);
+    assert.match(flatten(context), /Backtrack failed/);
     return [text('Handle the failure.')];
   });
   await host.session.prompt('Run a failing batch.');
   assert.equal(await readFile(file, 'utf8'), 'KEEP_THIS_WRITE');
   const entries = host.session.sessionManager.getBranch();
-  assert.ok(entries.some((e) => e.customType === 'backtrack:cancelled:v1'));
-  assert.ok(!entries.some((e) => e.customType === 'backtrack:state:v1' && e.data.lastTransaction));
+  assert.ok(entries.some(e => e.type === 'message' && e.message.role === 'toolResult' && e.message.toolName === 'backtrack' && e.message.isError));
+  assert.ok(!entries.some(e => e.type === 'backtrack'));
   assert.deepEqual(host.errors, []);
 });
 
@@ -255,7 +257,7 @@ test('multiple backtracks reject the batch requests without preventing sibling t
   const host = await setup(t, (n, context) => {
     if (n === 1) return [call('backtrack', { checkpoint: 0, message: 'First' }, 'one'),
       call('bash', { command: 'printf STILL_HERE' }, 'other'), call('backtrack', { checkpoint: 0, message: 'Second' }, 'two')];
-    assert.match(flatten(context), /At most one backtrack/);
+    assert.match(flatten(context), /Only one backtrack/);
     assert.match(flatten(context), /STILL_HERE/);
     return [text('Recovered.')];
   });
@@ -319,21 +321,22 @@ for (const reversed of [false, true]) skillTest(`compact regenerates checkpoints
   await host.session.compact();
   compacting = false;
   assert.equal(count() - before, 1);
-  const frame = host.session.sessionManager.getBranch().filter((e) => e.customType === 'backtrack:state:v1').at(-1).data;
-  assert.deepEqual(frame.checkpoints.map((checkpoint) => checkpoint.id), [0, 1]);
+  assert.equal(latestState({ sessionManager: host.session.sessionManager }), undefined);
   await host.session.prompt('Continue.');
+  assert.ok(latestState({ sessionManager: host.session.sessionManager }).checkpoints.some(c => c.id === 0));
   const source = flatten(host.contexts.at(-1));
   assert.equal((source.match(/## Dynamic skills/g) ?? []).length, 1);
-  assert.ok(source.indexOf('checkpoint 0') < source.indexOf('## Dynamic skills'));
+  assert.ok(source.indexOf('## Dynamic skills') < source.indexOf('checkpoint 0'), 'post-compact native messages belong to the baseline prefix');
   assert.deepEqual(host.errors, []);
 });
 
-for (const reversed of [false, true]) skillTest(`compact then repeated zero rebuild keeps one fresh directory and a stable prefix (${reversed})`, async (t) => {
+for (const reversed of [false, true]) skillTest(`compact then repeated zero rebuild preserves the native loaded directory and stable prefix (${reversed})`, async (t) => {
   let phase = 'initial', steps = 0, prefix, systemPrompt, tools, directoryContent;
+  const summaryInputs = [];
   const host = await setup(t, (_n, context) => {
     if (phase === 'compact') {
-      assert.doesNotMatch(flatten(context), /## Dynamic skills|Old active description|checkpoint 0/);
-      assert.match(flatten(context), /Initial task/);
+      assert.doesNotMatch(flatten(context), /checkpoint 0/);
+      summaryInputs.push(flatten(context));
       return [text('A compact summary.')];
     }
     if (phase === 'reset') {
@@ -351,8 +354,8 @@ for (const reversed of [false, true]) skillTest(`compact then repeated zero rebu
       assert.equal((source.match(/## Dynamic skills/g) ?? []).length, 1);
       assert.equal((source.match(/<name>diagnostics<\/name>/g) ?? []).length, 1);
       assert.doesNotMatch(source, /Root Skills|<name>project<\/name>/);
-      assert.match(source, /Rebuilt active description/);
-      assert.doesNotMatch(source, /Old active description/);
+      assert.match(source, /Old active description/);
+      assert.doesNotMatch(source, /Rebuilt active description/, 'queue settlement cannot rewrite a retained loading fact');
       assert.equal((source.match(/checkpoint 0/g) ?? []).length, 1);
       assert.equal((source.match(/checkpoint 1/g) ?? []).length, 1);
       const content = JSON.stringify(context.messages.find((message) => JSON.stringify(message.content).includes('## Dynamic skills')).content);
@@ -365,8 +368,8 @@ for (const reversed of [false, true]) skillTest(`compact then repeated zero rebu
     }
     if (phase === 'reload') {
       assert.equal((flatten(context).match(/## Dynamic skills/g) ?? []).length, 1);
-      assert.match(flatten(context), /Rebuilt active description/);
-      assert.doesNotMatch(flatten(context), /Old active description/);
+      assert.match(flatten(context), /Old active description/);
+      assert.doesNotMatch(flatten(context), /Rebuilt active description/);
     }
     return [text('A complete response. '.repeat(100))];
   }, { dynamic: true, reversed, persisted: true });
@@ -378,16 +381,19 @@ for (const reversed of [false, true]) skillTest(`compact then repeated zero rebu
   await writeFile(active, '---\nname: diagnostics\ndescription: Old active description\n---\n');
   host.session.sessionManager.appendCustomEntry('dynamic-skill:access-state', { version: 1, active: [active], pendingEviction: [] });
   await host.session.prompt('Initial task. '.repeat(100));
+  const frame = () => latestState({ sessionManager: host.session.sessionManager });
+  const compactEpoch = frame().epoch;
   phase = 'compact';
   await host.session.compact();
-  const frame = () => host.session.sessionManager.getBranch().findLast((entry) => entry.customType === 'backtrack:state:v1').data;
-  const compactEpoch = frame().epoch;
+  assert.match(summaryInputs.join('\n'), /## Dynamic skills|Old active description/);
+  assert.match(summaryInputs.join('\n'), /Initial task/);
+  assert.equal(frame(), undefined);
   const settlements = () => host.session.sessionManager.getBranch().filter((entry) => entry.customType === 'dynamic-skill:access-state').length;
   const before = settlements();
   await writeFile(active, '---\nname: diagnostics\ndescription: Rebuilt active description\n---\n');
   phase = 'reset';
   await host.session.prompt('Reset the context.');
-  assert.equal(steps, 3);
+  assert.equal(steps, 3, JSON.stringify({ messages: host.session.messages, errors: host.errors }));
   assert.notEqual(frame().epoch, compactEpoch);
   assert.deepEqual(frame().checkpoints.map((checkpoint) => checkpoint.id), [0, 1]);
   assert.equal(settlements() - before, 2, 'each zero backtrack settles skills exactly once');
@@ -413,7 +419,7 @@ for (const reversed of [false, true]) skillTest(`root children are discovered on
       return [call('read', { path: child }, 'read-child')];
     }
     if (n === 3) return [call('backtrack', { checkpoint: 0, message: 'Continue using the saved skill.' }, 'bt-child')];
-    assert.match(flatten(context), /Active skills \(1\/20\)/);
+    assert.match(flatten(context), /New active skills/);
     assert.equal((flatten(context).match(/Root child discovery/g) ?? []).length, 1);
     assert.doesNotMatch(flatten(context), /PRIVATE_CHILD_BODY/);
     return [text('Accessed child retained in active skills.')];
@@ -451,31 +457,25 @@ for (const reversed of [false, true]) skillTest(`reload after aborted continuati
   assert.deepEqual(host.errors, []);
 });
 
-test('SDK reload exposes a failed commit status to the model exactly once', async (t) => {
-  let recovering = false;
-  const host = await setup(t, (_n, context) => {
-    if (!recovering) return [call('backtrack', { checkpoint: 0, message: 'Continue.' }, 'bt')];
-    const body = flatten(context);
-    assert.equal((body.match(/Backtrack recovery — host status/g) ?? []).length, 1);
-    assert.match(body, /INJECTED_STATE_WRITE_FAILURE/);
-    assert.match(body, /Partial changes may remain/);
-    return [text('Recovered.')];
-  }, { persisted: true });
+test('SDK reload preserves a single failed tool result without recovery injections', async (t) => {
+  const host = await setup(t, n => n === 1
+    ? [call('backtrack', { checkpoint: 0, message: 'Continue.' }, 'bt')]
+    : [text('Recovered.')], { persisted: true });
   const manager = host.session.sessionManager;
-  const append = manager.appendCustomEntry.bind(manager);
-  manager.appendCustomEntry = (type, data) => {
-    if (type === 'backtrack:state:v1' && data.lastTransaction) throw new Error('INJECTED_STATE_WRITE_FAILURE');
-    return append(type, data);
-  };
+  const append = manager.appendBacktrackBatch.bind(manager);
+  manager.appendBacktrackBatch = () => { throw new Error('INJECTED_STATE_WRITE_FAILURE'); };
   await host.session.prompt('Initial task.');
-  assert.ok(host.contexts.slice(1).every(context => context.messages.length === 0),
-    'failed commit must abort with an empty view, never send raw history');
-  manager.appendCustomEntry = append;
-  recovering = true;
+  manager.appendBacktrackBatch = append;
   await host.session.reload();
   await host.session.prompt('Continue after reload.');
   await host.session.reload();
   await host.session.prompt('Continue again.');
+  for (const context of host.contexts.slice(1)) {
+    const body = flatten(context);
+    assert.equal((body.match(/Backtrack failed: INJECTED_STATE_WRITE_FAILURE/g) ?? []).length, 1);
+    assert.doesNotMatch(body, /Backtrack recovery|Partial changes may remain|Backtrack applied/);
+  }
+  assert.ok(!manager.getBranch().some(entry => entry.type === 'backtrack'));
   assert.deepEqual(host.errors, []);
 });
 
@@ -509,7 +509,7 @@ test('failed native compaction leaves the checkpoint epoch and effective history
   const host = await setup(t, (_n, context) => failCompact ? { error: 'Deliberate summarizer failure' }
     : [text('A complete response to preserve. '.repeat(100))]);
   await host.session.prompt('Initial context. '.repeat(100));
-  const frame = () => host.session.sessionManager.getBranch().filter((e) => e.customType === 'backtrack:state:v1').at(-1).data;
+  const frame = () => latestState({ sessionManager: host.session.sessionManager });
   const epoch = frame().epoch;
   failCompact = true;
   await assert.rejects(host.session.compact(), /Deliberate summarizer failure/);
@@ -554,7 +554,7 @@ test('invalid and legacy arguments fail without preparing or changing the effect
   assert.equal(host.session.sessionManager.getBranch().some((e) => e.customType === 'backtrack:request:v1'), false);
 });
 
-test('queued user input cancels a prepared backtrack rather than swallowing the new request', async (t) => {
+test('queued user input after committed publication survives into the next request', async (t) => {
   const host = await setup(t, (n, context) => n === 1
     ? [call('backtrack', { checkpoint: 0, message: 'Should not apply' }, 'cancel')]
     : [text('I received the newer instruction.')]);
@@ -569,8 +569,8 @@ test('queued user input cancels a prepared backtrack rather than swallowing the 
   assert.ok(queued);
   assert.match(flatten(host.contexts.at(-1)), /Newer user instruction/);
   const branch = host.session.sessionManager.getBranch();
-  assert.ok(branch.some((e) => e.customType === 'backtrack:cancelled:v1'));
-  assert.equal(branch.some((e) => e.customType === 'backtrack:state:v1' && e.data.lastTransaction), false);
+  assert.equal(branch.filter(e => e.type === 'backtrack').length, 1);
+  assert.equal(branch.some(e => e.customType === 'backtrack:cancelled:v1'), false);
 });
 
 skillTest('saved skills survive backtrack, are discovered once, and read bodies are folded on a later backtrack', async (t) => {
@@ -616,9 +616,9 @@ test('provider context overflow after backtrack follows native compact and retri
     return [text('Successfully continued.')];
   }, { compaction: true });
   await host.session.prompt('Some initial context. '.repeat(100));
-  assert.equal(host.contexts.length, 4);
+  assert.equal(host.contexts.length, 4, JSON.stringify(host.compactions));
   const branch = host.session.sessionManager.getBranch();
-  assert.equal(branch.filter((e) => e.customType === 'backtrack:request:v1').length, 1);
+  assert.equal(branch.filter((e) => e.type === 'backtrack').length, 1);
   assert.equal(branch.filter((e) => e.type === 'compaction').length, 1);
   assert.deepEqual(host.errors, []);
 });

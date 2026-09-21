@@ -1,280 +1,185 @@
 import { randomUUID } from "node:crypto";
-import { buildSessionContext, sessionEntryToContextMessages, type ExtensionAPI, type ExtensionContext, type SessionEntry, type SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent";
-import { DYNAMIC_CONTEXT, messageKey, skillContextService, type ContextMessage } from "./context.js";
-import { BLOCK, STATE, REQUEST, CANCELLED, COMPACT_BOUNDARY, type BacktrackState, type Checkpoint, type PreparedBacktrack } from "./contracts.js";
+import { sessionEntryToContextMessages, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { messageKey, type ContextMessage } from "./context.js";
+import { STATE, LEGACY_STATE, type BacktrackState, type Checkpoint, type BacktrackDetails } from "./contracts.js";
 import { HISTORY_HEADER, historyBetween, renderHistory } from "./history.js";
+import { nativeContext, type NativeEntry, type BacktrackOptions, type ReplacementMessage } from "./native.js";
+import { boundaryLocation } from "./render.js";
 import { estimateMessages, formatCount } from "./tokens.js";
+import type { BacktrackArguments } from "./schema.js";
 
-const isMarker = (message: ContextMessage) => message.role === "custom" && message.customType === "backtrack:checkpoint";
-const compactionId = (branch: SessionEntry[]) => branch.findLast((entry) => entry.type === "compaction")?.id ?? null;
-const isSource = (message: ContextMessage) => !isMarker(message)
-  && !(message.role === "custom" && message.customType === DYNAMIC_CONTEXT)
-  && !(message.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted"));
-const sources = (ctx: ExtensionContext) => ctx.sessionManager.buildContextEntries()
-  .flatMap((entry) => sessionEntryToContextMessages(entry).filter(isSource).map((message) => ({ id: entry.id, message })));
+const branchOf = (ctx: ExtensionContext): NativeEntry[] => ctx.sessionManager.getBranch();
+const effective = (ctx: ExtensionContext): NativeEntry[] => ctx.sessionManager.buildContextEntries();
+const baseOf = (ctx: ExtensionContext) => branchOf(ctx).findLast(e => e.type === "compaction")?.id ?? null;
+const messagesOf = (entry: NativeEntry): ContextMessage[] => entry.type === "backtrack" ? entry.messages : sessionEntryToContextMessages(entry);
+const nodesOf = (ctx: ExtensionContext) => effective(ctx).flatMap(entry => messagesOf(entry).map(message => ({ id: entry.id, message })))
+  .filter(({ message }) => !(message.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")));
+export function backtrackDetails(entry: NativeEntry): BacktrackDetails | undefined {
+  if (entry.type !== "backtrack") return;
+  const details = entry.details as BacktrackDetails | undefined;
+  return details?.kind === "backtrack:v2" ? details : undefined;
+}
 
+/** Only checkpoint metadata is restored here. Native context is never reconstructed by this extension. */
 export function latestState(ctx: ExtensionContext): BacktrackState | undefined {
-  const branch = ctx.sessionManager.getBranch();
-  const entry = branch.findLast((item) => item.type === "custom" && item.customType === STATE);
-  if (entry?.type !== "custom") return;
-  const data = entry.data as BacktrackState;
-  if (data.version !== 1 || !Array.isArray(data.view) || !Array.isArray(data.checkpoints)) throw new Error("Unsupported or corrupt backtrack state.");
-  // Upgrade old fingerprint snapshots by their position in the source path.
-  // No old messages or records need rewriting, and no request equality test is needed.
-  let cursor = data.cursor;
-  if (!("cursor" in data)) {
-    const preceding = new Set(branch.slice(0, branch.indexOf(entry)).map((item) => item.id));
-    cursor = sources(ctx).findLast((node) => preceding.has(node.id))?.id ?? null;
+  for (const entry of branchOf(ctx).toReversed()) {
+    if (entry.type === "compaction") return;
+    if (entry.type === "custom" && entry.customType === STATE) {
+      const state = entry.data as BacktrackState;
+      if (state.version !== 2 || !Array.isArray(state.checkpoints)) throw new Error("Corrupt backtrack checkpoint state.");
+      return structuredClone(state);
+    }
+    const details = backtrackDetails(entry);
+    if (entry.type === "backtrack" && !details) return;
+    if (details) {
+      const state = structuredClone(details.state);
+      if (details.keepAfter === undefined) state.cursor = entry.id;
+      state.lastTransaction = entry.id;
+      return state;
+    }
   }
-  const { epoch, base, next, view, checkpoints, lastTransaction, usage } = data;
-  return structuredClone({ version: 1, epoch, base, next, cursor, view, checkpoints,
-    ...(lastTransaction ? { lastTransaction } : {}), ...(usage ? { usage } : {}) });
 }
 
 export class BacktrackEngine {
-  commitStarted = false;
   constructor(private pi: ExtensionAPI) {}
-  private append(ctx: ExtensionContext, type: string, data: unknown): string {
-    this.pi.appendEntry(type, structuredClone(data));
-    const id = ctx.sessionManager.getLeafId();
-    if (!id) throw new Error("Host did not persist the backtrack record.");
-    return id;
-  }
-  private block(ctx: ExtensionContext, message: ContextMessage): string { return this.append(ctx, BLOCK, { message }); }
-  messages(ctx: ExtensionContext, state: BacktrackState): ContextMessage[] {
-    return structuredClone(state.view.flatMap((id) => {
-      const entry = ctx.sessionManager.getEntry(id);
-      if (!entry) throw new Error(`Backtrack context references missing entry ${id}.`);
-      if (entry.type === "custom" && entry.customType === BLOCK) return [(entry.data as { message: ContextMessage }).message];
-      return sessionEntryToContextMessages(entry);
-    }));
-  }
-  private skills(ctx: ExtensionContext, state: BacktrackState): void {
-    const service = skillContextService(this.pi);
-    if (!service) return;
-    const messages = this.messages(ctx, state);
-    const refs = new Map<string, string[]>();
-    messages.forEach((message, i) => {
-      const key = messageKey(message);
-      refs.set(key, [...refs.get(key) ?? [], state.view[i]!]);
-    });
-    state.view = service.project(ctx, messages).map((message) =>
-      refs.get(messageKey(message))?.shift() ?? this.block(ctx, message));
+  assertCompatible(ctx: ExtensionContext): void {
+    // A v1 view may hide arbitrary raw entries. Never silently discard that projection.
+    if (branchOf(ctx).some(e => e.type === "custom" && e.customType === LEGACY_STATE)) {
+      throw new Error("Legacy backtrack view session: continue with the previous extension or start a new session. Automatic migration is not supported.");
+    }
   }
   private estimate(ctx: ExtensionContext, messages: ContextMessage[]): number {
     const active = this.pi.getActiveTools?.();
-    const tools = this.pi.getAllTools().filter((tool) => !active || active.includes(tool.name));
-    return estimateMessages(messages, ctx.getSystemPrompt(),
-      JSON.stringify(tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }))));
+    const tools = this.pi.getAllTools().filter(tool => !active || active.includes(tool.name));
+    return estimateMessages(messages, ctx.getSystemPrompt(), JSON.stringify(tools.map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters }))));
   }
-  private checkpoint(ctx: ExtensionContext, state: BacktrackState, boundary: string | null, zero = false): number | null {
-    if (!zero) this.skills(ctx, state);
+  private checkpoint(ctx: ExtensionContext, state: BacktrackState, boundary: string | null, historyBoundary = boundary, zero = false): void {
     const id = zero ? 0 : state.next++;
     if (!Number.isSafeInteger(id)) throw new Error("Checkpoint number exhausted.");
+    const tokens = zero ? null : this.estimate(ctx, nativeContext(ctx));
     const window = ctx.model?.contextWindow;
-    const tokens = zero ? null : this.estimate(ctx, this.messages(ctx, state));
     const usage = tokens === null || !window ? "unknown" : `${formatCount(tokens)}/${formatCount(window)} ${Math.round(tokens / window * 100)}%`;
-    const message: ContextMessage = { role: "custom", customType: "backtrack:checkpoint", content: `backtrack-checkpoint ${id} context ${usage}`, display: false, timestamp: 0,
-      details: { epoch: state.epoch, id, boundary, accuracy: tokens === null ? "unknown" : "estimated" } };
-    const ref = this.block(ctx, message);
-    state.view.push(ref);
-    state.checkpoints.push({ id, ref, boundary });
-    return tokens;
+    state.checkpoints.push({ id, boundary, historyBoundary, marker: {
+      role: "custom", customType: "backtrack:checkpoint", content: `backtrack-checkpoint ${id} context ${usage}`, display: false, timestamp: 0,
+      details: { epoch: state.epoch, id, boundary, accuracy: tokens === null ? "unknown" : "estimated" },
+    } });
   }
-  private save(ctx: ExtensionContext, state: BacktrackState): void { this.append(ctx, STATE, state); }
-
-  /** Consume source nodes once. Never compare an extension projection with raw history. */
   sync(ctx: ExtensionContext): BacktrackState {
-    const nodes = sources(ctx);
-    const branch = ctx.sessionManager.getBranch();
-    const base = compactionId(branch);
+    this.assertCompatible(ctx);
+    const nodes = nodesOf(ctx), entries = effective(ctx), branch = branchOf(ctx);
     let state = latestState(ctx);
-    const reset = !state || state.base !== base;
-    if (reset) {
-      const firstUser = nodes.findIndex((node) => node.message.role === "user");
-      const prefix = nodes.slice(0, firstUser < 0 ? nodes.length : firstUser);
-      state = { version: 1, epoch: randomUUID(), base, next: 1, cursor: prefix.at(-1)?.id ?? null,
-        view: prefix.map((node) => node.id), checkpoints: [] };
-      // Native compaction can place a summary before a retained tail whose raw
-      // entries precede that summary. History boundaries use raw node positions.
-      const firstSource = firstUser < 0 ? -1 : branch.findIndex((entry) => entry.id === nodes[firstUser]!.id);
-      const boundary = firstSource < 0 ? base : branch.slice(0, firstSource).findLast((entry) => entry.type !== "label")?.id ?? null;
-      this.checkpoint(ctx, state, boundary, true);
-    }
-    if (!state) throw new Error("Failed to initialize context.");
-    const start = state.cursor === null ? 0 : nodes.findIndex((node) => node.id === state.cursor) + 1;
-    if (state.cursor !== null && start === 0) throw new Error(`Source node ${state.cursor} is not on the current context path.`);
     const before = JSON.stringify(state);
-    // Navigating an older path must not reuse numbers already allocated in this epoch.
-    for (const entry of ctx.sessionManager.getEntries()) {
-      if (entry.type === "custom" && entry.customType === STATE) {
-        const old = entry.data as BacktrackState;
-        if (old.epoch === state.epoch) state.next = Math.max(state.next, old.next);
-      }
+    if (!state) {
+      const firstUser = nodes.findIndex(node => node.message.role === "user");
+      const prefix = nodes.slice(0, firstUser < 0 ? nodes.length : firstUser);
+      const boundary = prefix.at(-1)?.id ?? null;
+      const rawIndex = firstUser < 0 ? -1 : branch.findIndex(e => e.id === nodes[firstUser]!.id);
+      const historyBoundary = rawIndex < 0 ? boundary : branch.slice(0, rawIndex).findLast(e => e.type !== "label")?.id ?? null;
+      state = { version: 2, epoch: randomUUID(), base: baseOf(ctx), next: 1, cursor: boundary, checkpoints: [] };
+      this.checkpoint(ctx, state, boundary, historyBoundary, true);
+    }
+    // /tree must not recycle an ID already issued on another path in this epoch.
+    for (const entry of ctx.sessionManager.getEntries() as NativeEntry[]) {
+      const old = entry.type === "custom" && entry.customType === STATE ? entry.data as BacktrackState : backtrackDetails(entry)?.state;
+      if (old?.epoch === state.epoch) state.next = Math.max(state.next, old.next);
+    }
+    const visible = new Set(entries.map(e => e.id));
+    state.checkpoints = state.checkpoints.filter(c => c.boundary === null || visible.has(c.boundary));
+    const cursorIndex = state.cursor === null ? -1 : entries.findIndex(e => e.id === state.cursor);
+    if (state.cursor !== null && cursorIndex < 0) throw new Error("Checkpoint cursor is not in native effective context.");
+    let start = state.cursor === null ? 0 : nodes.findIndex(n => entries.findIndex(e => e.id === n.id) > cursorIndex);
+    if (start < 0) start = nodes.length;
+    const reduction = branch.findLast(e => e.id === state!.lastTransaction);
+    const details = reduction && backtrackDetails(reduction);
+    if (details && details.keepAfter === undefined && reduction && !state.usage) {
+      // Anchor the continuation before later conversation, including only adjacent observer messages.
+      let boundary = reduction.id;
+      while (nodes[start]?.message.role === "custom") boundary = nodes[start++]!.id;
+      this.checkpoint(ctx, state, boundary, reduction.id);
     }
     const pending = new Set<string>();
-    const cancelled = new Set(branch.flatMap((entry) => entry.type === "custom" && entry.customType === CANCELLED
-      ? [(entry.data as { id: string }).id] : []));
-    const abandoned = new Map(branch.flatMap((entry) => entry.type === "custom" && entry.customType === REQUEST
-      && cancelled.has((entry.data as PreparedBacktrack).id)
-      ? [[(entry.data as PreparedBacktrack).assistantId, (entry.data as PreparedBacktrack).callId] as const] : []));
     for (let i = 0; i < nodes.length; i++) {
-      const { id, message } = nodes[i]!;
+      const { message } = nodes[i]!;
       if (message.role === "assistant") for (const part of message.content) if (part.type === "toolCall") pending.add(part.id);
-      const abandonedCall = abandoned.get(id);
-      const nextAssistant = abandonedCall ? nodes.findIndex((node, index) => index > i && node.message.role === "assistant") : -1;
-      const needsRecovery = abandonedCall && !nodes.slice(i + 1, nextAssistant < 0 ? undefined : nextAssistant)
-        .some(({ message: item }) => item.role === "toolResult" && item.toolCallId === abandonedCall);
-      if (needsRecovery) pending.delete(abandonedCall);
       const hadPending = pending.size > 0;
       if (message.role === "toolResult") pending.delete(message.toolCallId);
-      if (i < start) continue;
-      state.view.push(id);
-      if (needsRecovery && abandonedCall) state.view.push(this.block(ctx, { role: "toolResult", toolName: "backtrack", toolCallId: abandonedCall,
-        isError: true, timestamp: 0, content: [{ type: "text", text: "Interrupted backtrack was cancelled during session recovery; it was not replayed." }] }));
-      if (!pending.size && (message.role === "user" || (message.role === "toolResult" && hadPending))) this.checkpoint(ctx, state, id);
+      if (i < start || pending.size || !(message.role === "user" || (message.role === "toolResult" && hadPending))) continue;
+      while (nodes[i + 1]?.message.role === "custom") i++;
+      const boundary = nodes[i]!.id;
+      if (!state.checkpoints.some(c => c.boundary === boundary)) this.checkpoint(ctx, state, boundary);
+    }
+    if (details && !state.usage) {
+      state.usage = { before: details.before, after: this.estimate(ctx, nativeContext(ctx)), ...(ctx.model ? { window: ctx.model.contextWindow } : {}) };
     }
     state.cursor = nodes.at(-1)?.id ?? null;
-    this.skills(ctx, state);
-    if (reset && base && state.checkpoints.length === 1) this.checkpoint(ctx, state, base);
-    if (reset || before !== JSON.stringify(state)) this.save(ctx, state);
+    if (before !== JSON.stringify(state)) this.pi.appendEntry(STATE, structuredClone(state));
     return state;
   }
-  recoverFailure(ctx: ExtensionContext, transactionId: string, reason: string): void {
-    const branch = ctx.sessionManager.getBranch();
-    const notices = new Set(branch.flatMap((entry) => {
-      if (entry.type !== "custom" || entry.customType !== BLOCK) return [];
-      const message = (entry.data as { message: ContextMessage }).message;
-      return message.role === "custom" && message.customType === "backtrack:commit-failed"
-        && (message.details as { transactionId?: string } | undefined)?.transactionId === transactionId ? [entry.id] : [];
-    }));
-    // A block alone is not a committed notice. A saved view must reference it.
-    // Once compacted, the status belongs to the summary, not another injection.
-    if (branch.some((entry) => entry.type === "custom" && entry.customType === STATE
-      && (entry.data as BacktrackState).view.some((id) => notices.has(id)))) return;
-    const state = this.sync(ctx);
-    state.view.push(this.block(ctx, { role: "custom", customType: "backtrack:commit-failed", display: true, timestamp: 0,
-      details: { transactionId },
-      content: `[Backtrack recovery — host status]\nThe previous backtrack commit did not finish cleanly: ${reason}. Resuming from the last persisted effective context without replay. Partial changes may remain; no rollback of files or external actions is implied.` }));
-    this.save(ctx, state);
-  }
-  current(ctx: ExtensionContext): ContextMessage[] {
-    const state = latestState(ctx);
-    return state && state.base === compactionId(ctx.sessionManager.getBranch()) ? this.messages(ctx, state)
-      : structuredClone(buildSessionContext(ctx.sessionManager.getBranch()).messages);
-  }
+  /** Annotate the received native context; never replace, reorder or reinsert its messages. */
   project(ctx: ExtensionContext, input: ContextMessage[]): ContextMessage[] {
     const state = this.sync(ctx);
-    // Earlier context hooks may inject messages without persisting them. Keep
-    // those request-local additions outside the source cursor. Interior additions
-    // follow their preceding source node; prefix/suffix additions remain at the edges.
     const queues = new Map<string, string[]>();
-    for (const node of sources(ctx)) {
-      const key = messageKey(node.message);
-      queues.set(key, [...queues.get(key) ?? [], node.id]);
-    }
-    // Fingerprint-era snapshots may contain captured request-local custom
-    // messages. Recognize those existing blocks instead of injecting them twice;
-    // keep the saved prefix and its immutable references intact.
-    for (const id of state.view) {
-      const entry = ctx.sessionManager.getEntry(id);
-      if (entry?.type !== "custom" || entry.customType !== BLOCK) continue;
-      const message = (entry.data as { message: ContextMessage }).message;
-      if (message.role !== "custom" || !isSource(message) || message.customType.startsWith("backtrack:")) continue;
+    for (const { id, message } of nodesOf(ctx)) {
       const key = messageKey(message);
       queues.set(key, [...queues.get(key) ?? [], id]);
     }
-    const received = new Map<string, ContextMessage>();
-    const after = new Map<string, ContextMessage[]>();
-    const prefix: ContextMessage[] = [];
-    let previous: string | undefined, additions: ContextMessage[] = [];
-    for (const message of input.filter(isSource)) {
+    const anchors = new Map<string, number>();
+    let first = -1;
+    input.forEach((message, index) => {
       const id = queues.get(messageKey(message))?.shift();
-      if (!id) { additions.push(message); continue; }
-      if (previous) after.set(previous, additions);
-      else prefix.push(...additions);
-      additions = [];
-      received.set(id, message);
-      previous = id;
+      if (id !== undefined) { anchors.set(id, index); if (first < 0) first = index; }
+    });
+    const after = new Map<number, ReplacementMessage[]>();
+    for (const checkpoint of state.checkpoints) {
+      const index = checkpoint.boundary === null ? (first < 0 ? input.length : first) - 1 : anchors.get(checkpoint.boundary);
+      if (index === undefined) continue;
+      after.set(index, [...after.get(index) ?? [], checkpoint.marker]);
     }
-    if (!previous) { prefix.push(...additions); additions = []; }
-    const managed = this.messages(ctx, state);
-    const view = [...prefix, ...state.view.flatMap((id, i) => {
-      const message = ctx.sessionManager.getEntry(id)?.type === "custom" ? managed[i] : received.get(id);
-      return message ? [message, ...after.get(id) ?? []] : [];
-    }), ...additions];
-    skillContextService(this.pi)?.shown(ctx, view);
-    return structuredClone(view);
+    return structuredClone([...(after.get(-1) ?? []), ...input.flatMap((message, index) => [message, ...after.get(index) ?? []])]);
   }
   validate(ctx: ExtensionContext, checkpoint: number): { state: BacktrackState; target: Checkpoint } {
+    this.assertCompatible(ctx);
     const state = latestState(ctx);
-    if (!state || state.base !== compactionId(ctx.sessionManager.getBranch())) throw new Error("No current checkpoints. Use a checkpoint shown in the current context.");
-    const target = state.checkpoints.find((item) => item.id === checkpoint);
-    if (!target || !state.view.includes(target.ref)) throw new Error(`Checkpoint ${checkpoint} is not active on this path.`);
+    if (!state || state.base !== baseOf(ctx)) throw new Error("No current checkpoints. Use a checkpoint shown in the current context.");
+    const target = state.checkpoints.find(c => c.id === checkpoint);
+    if (!target || (target.boundary !== null && !effective(ctx).some(e => e.id === target.boundary))) throw new Error(`Checkpoint ${checkpoint} is not active on this path.`);
     return { state, target };
   }
-  apply(ctx: ExtensionContext, request: PreparedBacktrack): void {
-    this.commitStarted = false;
-    const { state, target } = this.validate(ctx, request.target);
-    if (state.epoch !== request.epoch) throw new Error("Checkpoint belongs to a previous epoch.");
-    if (state.lastTransaction === request.id) throw new Error("Backtrack transaction already completed.");
-    const branch = ctx.sessionManager.getBranch();
-    const assistantIndex = branch.findIndex((entry) => entry.id === request.assistantId);
-    if (assistantIndex < 0 || branch.slice(assistantIndex + 1).some((entry) => entry.type === "message" && entry.message.role !== "toolResult")) {
-      throw new Error("Session advanced while backtrack was pending.");
-    }
-    const from = branch.findLast((entry) => entry.type === "message")?.id;
-    if (!from) throw new Error("Missing completed tool batch.");
-    const nodes = sources(ctx);
-    const cursor = state.cursor === null ? -1 : nodes.findIndex((node) => node.id === state.cursor);
-    const before = this.estimate(ctx, [...this.messages(ctx, state), ...nodes.slice(cursor + 1).map((node) => node.message)]);
-    const history = renderHistory(historyBetween(branch, target.boundary, from));
-    const hasHistory = history.content.length > 0;
-    if (hasHistory) history.content = [{ type: "text", text: HISTORY_HEADER },
-      ...(typeof history.content === "string" ? [{ type: "text" as const, text: history.content }] : history.content)];
-    // /tree-like semantics: select the saved node, append the handoff, continue.
-    // Unlike /tree, only the effective view moves; the session leaf never rewinds.
-    state.view = state.view.slice(0, state.view.indexOf(target.ref) + 1);
-    state.checkpoints = state.checkpoints.filter((item) => state.view.includes(item.ref));
-    const prepared = skillContextService(this.pi)?.prepare(ctx, this.messages(ctx, state), request.id, request.target === 0);
-    if (request.target === 0) { state.epoch = randomUUID(); state.next = 1; }
-    this.commitStarted = true;
-    prepared?.commit();
-    for (const message of prepared?.messages ?? []) state.view.push(this.block(ctx, message));
-    if (hasHistory) state.view.push(this.block(ctx, history));
-    state.view.push(this.block(ctx, { role: "custom", customType: "backtrack:continuation", content: `[Backtrack message — agent handoff]\n${request.message}`, display: true, timestamp: 0 }));
-    // Reuse the continuation checkpoint's estimate, after its final skill projection.
-    const after = this.checkpoint(ctx, state, from)!;
-    state.usage = { before, after, ...(ctx.model ? { window: ctx.model.contextWindow } : {}) };
-    state.cursor = from;
-    state.lastTransaction = request.id;
-    this.save(ctx, state);
-  }
-  prepareCompact(event: SessionBeforeCompactEvent, ctx: ExtensionContext): void {
-    // Consume complete boundaries normally. If summarization is cancelled, their
-    // checkpoints remain usable; there is no separate "consume without numbering" mode.
-    const state = this.sync(ctx);
-    const effective = this.messages(ctx, state).filter((message) => !isMarker(message));
-    // Skill directories are regenerated, not conversation facts. Their cost
-    // still belongs to the pre-compaction context, not to the summary request.
-    const messages = effective.filter((message) => !(message.role === "custom" && message.customType === DYNAMIC_CONTEXT));
-    // SDK 0.85.1 retains raw entries by firstKeptEntryId. Summarize the effective
-    // view with the host's one default request, retaining no raw tail to resurrect.
-    const anchor = this.append(ctx, COMPACT_BOUNDARY, { epoch: state.epoch, cursor: state.cursor });
-    const preparation = event.preparation;
-    preparation.messagesToSummarize = messages;
-    preparation.turnPrefixMessages = [];
-    preparation.isSplitTurn = false;
-    delete preparation.previousSummary;
-    preparation.firstKeptEntryId = anchor;
-    preparation.tokensBefore = estimateMessages(effective, ctx.getSystemPrompt());
-    preparation.fileOps = { read: new Set(), written: new Set(), edited: new Set() };
-    for (const message of messages) if (message.role === "assistant") {
-      for (const part of message.content) if (part.type === "toolCall" && typeof part.arguments.path === "string") {
-        if (part.name === "read") preparation.fileOps.read.add(part.arguments.path);
-        if (part.name === "write") preparation.fileOps.written.add(part.arguments.path);
-        if (part.name === "edit") preparation.fileOps.edited.add(part.arguments.path);
+  prepare(ctx: ExtensionContext, callId: string, args: BacktrackArguments): BacktrackOptions {
+    const { state, target } = this.validate(ctx, args.checkpoint);
+    const branch = branchOf(ctx), entries = effective(ctx);
+    const assistant = branch.findLast(e => e.type === "message" && e.message.role === "assistant");
+    if (assistant?.type !== "message" || assistant.message.role !== "assistant") throw new Error("Missing tool-calling assistant message.");
+    let firstKeptEntryId: string | undefined;
+    let end = assistant.id;
+    if (args.keep_after_checkpoint !== undefined) {
+      const tail = this.validate(ctx, args.keep_after_checkpoint).target;
+      const left = target.boundary === null ? -1 : entries.findIndex(e => e.id === target.boundary);
+      const right = tail.boundary === null ? -1 : entries.findIndex(e => e.id === tail.boundary);
+      if (right <= left) throw new Error("keep_after_checkpoint must follow checkpoint in the effective context.");
+      firstKeptEntryId = entries[right + 1]?.id;
+      if (!firstKeptEntryId || entries.findIndex(e => e.id === assistant.id) <= right) throw new Error("The retained tail must include the current tool call.");
+      end = tail.historyBoundary ?? tail.boundary!;
+      state.checkpoints = state.checkpoints.filter(c => c.id <= target.id || c.id > tail.id);
+      state.cursor = assistant.id;
+    } else {
+      state.checkpoints = state.checkpoints.slice(0, state.checkpoints.indexOf(target) + 1);
+      if (target.id === 0) {
+        state.epoch = randomUUID(); state.next = 1;
+        target.marker.details = { ...target.marker.details as object, epoch: state.epoch };
       }
     }
+    delete state.usage;
+    const history = renderHistory(historyBetween(branch as SessionEntry[], target.historyBoundary, end));
+    const messages: ReplacementMessage[] = [];
+    if (history.content.length) {
+      history.content = [{ type: "text", text: HISTORY_HEADER }, ...(typeof history.content === "string" ? [{ type: "text" as const, text: history.content }] : history.content)];
+      messages.push(history);
+    }
+    if (args.keep_after_checkpoint === undefined) messages.push({ role: "custom", customType: "backtrack:continuation", content: `[Backtrack message — agent handoff]\n${args.message ?? ""}`, display: true, timestamp: 0 });
+    const details: BacktrackDetails = { kind: "backtrack:v2", callId, target: args.checkpoint,
+      ...(args.keep_after_checkpoint === undefined ? {} : { keepAfter: args.keep_after_checkpoint }),
+      location: boundaryLocation(branch as SessionEntry[], target.boundary, target.id), before: this.estimate(ctx, nativeContext(ctx)), state };
+    return { keepThroughEntryId: target.boundary, ...(firstKeptEntryId ? { firstKeptEntryId } : {}), messages, details };
   }
 }

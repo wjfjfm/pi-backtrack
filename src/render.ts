@@ -1,7 +1,8 @@
 import type { ExtensionContext, SessionEntry, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { keyHint } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
-import { CANCELLED, REQUEST, STATE, type BacktrackState, type PreparedBacktrack, type BacktrackUsage } from "./contracts.js";
+import { STATE, type BacktrackState, type BacktrackDetails, type BacktrackUsage } from "./contracts.js";
+import type { NativeEntry } from "./native.js";
 import { formatCount } from "./tokens.js";
 
 // Labels are display-only. Never change the stored handoff or model context.
@@ -32,34 +33,26 @@ export function boundaryLocation(branch: SessionEntry[], boundary: string | null
 }
 
 interface Display {
-  request: PreparedBacktrack;
+  request: BacktrackDetails;
   usage?: BacktrackUsage;
   applied?: boolean;
   error?: string;
 }
 
-/** Presentation follows persisted transactions, not the tool's prepared result. */
+/** Presentation follows committed native entries, not provisional tool results. */
 export class BacktrackRenderer {
   private records = new Map<string, Display>();
   private redraw = new Map<string, () => void>();
   refresh(ctx: ExtensionContext): void {
     const transactions = new Map<string, Display>();
-    for (const entry of ctx.sessionManager.getBranch()) {
-      if (entry.type !== "custom") continue;
-      if (entry.customType === REQUEST) {
-        const request = entry.data as PreparedBacktrack;
-        transactions.set(request.id, { request });
-      } else if (entry.customType === STATE) {
+    for (const entry of ctx.sessionManager.getBranch() as NativeEntry[]) {
+      if (entry.type === "backtrack") {
+        const request = entry.details as BacktrackDetails | undefined;
+        if (request?.kind === "backtrack:v2") transactions.set(entry.id, { request, applied: true });
+      } else if (entry.type === "custom" && entry.customType === STATE) {
         const state = entry.data as BacktrackState;
         const record = state.lastTransaction && transactions.get(state.lastTransaction);
-        if (record) {
-          record.applied = true;
-          if (state.usage) record.usage = state.usage;
-        }
-      } else if (entry.customType === CANCELLED) {
-        const data = entry.data as { id: string; reason: string; phase?: string };
-        const record = transactions.get(data.id);
-        if (record) record.error = `${data.phase === "commit-failed" ? "Commit incomplete; partial changes may remain" : "Not applied"}: ${data.reason}`;
+        if (record && state.usage) record.usage = state.usage;
       }
     }
     this.records = new Map([...transactions.values()].map((record) => [record.request.callId, record]));
@@ -71,13 +64,14 @@ export class BacktrackRenderer {
   clear(): void { this.records.clear(); this.redraw.clear(); }
 
   renderCall: NonNullable<ToolDefinition["renderCall"]> = (rawArgs, theme, context) => {
-    const args = (rawArgs ?? {}) as { checkpoint?: number; message?: string };
+    const args = (rawArgs ?? {}) as { checkpoint?: number; message?: string; keep_after_checkpoint?: number };
     this.redraw.set(context.toolCallId, context.invalidate);
     const record = this.records.get(context.toolCallId);
     const location = record?.request.location ?? [];
     const expanded = context.expanded;
     let title = theme.fg("toolTitle", theme.bold("backtrack")) + " "
       + theme.fg("accent", `checkpoint ${args.checkpoint ?? "…"}`);
+    if (args.keep_after_checkpoint !== undefined) title += theme.fg("muted", ` · keep after ${args.keep_after_checkpoint}`);
     if (location.length === 1) {
       const label = /^(after |context start)/.test(location[0]!) ? location[0]! : `after ${location[0]}`;
       title += theme.fg("muted", ` · ${expanded ? label : short(label)}`);
@@ -106,7 +100,7 @@ export class BacktrackRenderer {
     else if (record?.usage) {
       const { before, after, window } = record.usage;
       text = theme.fg("muted", `context ${formatCount(before)} → ${formatCount(after)}${window ? ` / ${formatCount(window)} (${Math.round(after / window * 100)}%)` : ""} · estimated`);
-    } else text = theme.fg("muted", record?.applied ? "Applied; context usage unavailable." : "Prepared; waiting for tool batch.");
+    } else text = theme.fg("muted", record?.applied || (result.details as { status?: string } | undefined)?.status === "applied" ? "Applied; context usage unavailable." : "Waiting for tool batch.");
     return new Text(`\n${text}`, 0, 0);
   };
 }

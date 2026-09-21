@@ -1,41 +1,32 @@
+import type { ReplacementMessage } from "./native.js";
 export type { BacktrackArguments } from "./schema.js";
-export const STATE = "backtrack:state:v1";
-export const BLOCK = "backtrack:block:v1";
-export const REQUEST = "backtrack:request:v1";
-export const CANCELLED = "backtrack:cancelled:v1";
-export const COMPACT_BOUNDARY = "backtrack:compact-boundary:v1";
+export const STATE = "backtrack:checkpoints:v2";
+export const LEGACY_STATE = "backtrack:state:v1";
 export interface Checkpoint {
   id: number;
-  ref: string;
-  /** Original session entry after which the history interval starts. null = start. */
+  /** Effective native entry boundary, not a private context projection. */
   boundary: string | null;
+  /** Raw dialogue extraction boundary; compaction can reorder its retained tail. */
+  historyBoundary: string | null;
+  marker: ReplacementMessage;
 }
 export interface BacktrackState {
-  version: 1;
+  version: 2;
   epoch: string;
   base: string | null;
   next: number;
-  /** Last consumed source node on the active session path, independent of context hooks. */
   cursor: string | null;
-  /** Immutable session-entry references; raw tool outputs are not copied into snapshots. */
-  view: string[];
   checkpoints: Checkpoint[];
   lastTransaction?: string;
-  /** Display-only snapshot, committed with the effective view. */
   usage?: BacktrackUsage;
 }
-export interface BacktrackUsage {
-  before: number;
-  after: number;
-  window?: number;
-}
-export interface PreparedBacktrack {
-  id: string;
+export interface BacktrackUsage { before: number; after: number; window?: number }
+export interface BacktrackDetails {
+  kind: "backtrack:v2";
   callId: string;
-  assistantId: string;
-  epoch: string;
   target: number;
-  message: string;
-  /** Immutable human-readable description of the target boundary. */
-  location?: string[];
+  keepAfter?: number;
+  location: string[];
+  before: number;
+  state: BacktrackState;
 }

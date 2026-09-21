@@ -8,15 +8,19 @@ import { backtrackDescription } from '../dist/tool-description.js';
 const plain = (message) => message.content.filter((part) => part.type === 'text').map((part) => part.text).join('');
 const row = (id, role, text, turn = id, images = []) => ({ id, role, text, turn, images });
 
-test('strict arguments reject old schemas, unsafe IDs, fractions and blank continuation', () => {
+test('strict arguments reject old schemas, unsafe IDs, fractions and non-string continuation', () => {
   for (const args of [null, {}, { checkpoint: -1, message: 'x' }, { checkpoint: 0.5, message: 'x' },
-    { checkpoint: Number.MAX_SAFE_INTEGER + 1, message: 'x' }, { checkpoint: 0, message: ' ' },
+    { checkpoint: Number.MAX_SAFE_INTEGER + 1, message: 'x' }, { checkpoint: 0, message: 1 },
     { checkpoint: 0, message: 'x', knowledge: 'old' }]) assert.throws(() => validateArguments(args));
-  assert.doesNotThrow(() => validateArguments({ checkpoint: 0, message: 'Continue' }));
+  for (const message of ['Continue', '', ' ']) assert.doesNotThrow(() => validateArguments({ checkpoint: 0, message }));
 });
 
 test('tool parameters describe an intact prefix and a checkpoint-relative work handoff', () => {
-  assert.deepEqual(Object.keys(backtrackParameters.properties), ['checkpoint', 'message']);
+  assert.deepEqual(Object.keys(backtrackParameters.properties), ['checkpoint', 'message', 'keep_after_checkpoint']);
+  assert.deepEqual(backtrackParameters.required, ['checkpoint']);
+  assert.doesNotThrow(() => validateArguments({ checkpoint: 0 }));
+  assert.doesNotThrow(() => validateArguments({ checkpoint: 0, keep_after_checkpoint: 2 }));
+  assert.doesNotThrow(() => validateArguments({ checkpoint: 0, message: 'Continue', keep_after_checkpoint: 2 }));
   assert.match(backtrackParameters.properties.checkpoint.description, /Context through this checkpoint is preserved intact/);
   assert.doesNotMatch(backtrackDescription, /managed|request-local|provider|hard limits|minimums to fill|if enabled/);
   assert.match(backtrackDescription, /0-20%.*short tasks, 0-40%.*standard tasks, and 0-80%.*difficult tasks/);

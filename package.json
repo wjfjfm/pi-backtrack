@@ -22,7 +22,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "test": "npm run build && node --test test/*.test.mjs && npm run test:native",
+    "test:native": "node scripts/test-native.mjs"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.85.1",
