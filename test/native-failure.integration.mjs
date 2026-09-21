@@ -111,21 +111,30 @@ for (const mode of ['sequential', 'parallel']) {
       if (failure === 'storage') vi.spyOn(sm, 'appendBacktrackBatch').mockImplementationOnce(() => { throw new Error('INJECTED_DISK_FAILURE'); });
     });
   });
-  test(`user input queued at publication survives committed fold (${mode})`, async () => {
-    let queued = false;
-    await fixture(({ sm, requests }) => {
-      expect(queued).toBe(true);
-      expect(sm.getBranch().filter(e => e.type === 'backtrack')).toHaveLength(1);
-      expect(JSON.stringify(requests.at(-1))).toContain('NEWER_USER_INSTRUCTION');
-      expect(sm.getBranch().filter(e => e.type === 'message' && e.message.role === 'user'
-        && JSON.stringify(e.message.content).includes('NEWER_USER_INSTRUCTION'))).toHaveLength(1);
-    }, mode, [fold()], ({ session }) => {
-      session.subscribe(event => {
-        if (event.type === 'tool_execution_end' && event.toolName === 'backtrack' && !queued) {
-          queued = true;
-          void session.steer('NEWER_USER_INSTRUCTION');
-        }
+  for (const timing of ['tool_execution_start', 'tool_execution_end']) for (const delivery of ['steer', 'followUp']) for (const keep of [false, true]) {
+    test(`queued ${delivery} survives fold at ${timing} (${mode}, keep=${keep})`, async () => {
+      let queued = false;
+      await fixture(({ sm, requests, published }) => {
+        expect(queued).toBe(true);
+        const branch = sm.getBranch();
+        const reductions = branch.filter(e => e.type === 'backtrack');
+        expect(reductions).toHaveLength(1);
+        expect(published.find(e => e.toolCallId === 'fold').isError).toBeFalsy();
+        expect(JSON.stringify(reductions[0].messages)).not.toContain('NEWER_USER_INSTRUCTION');
+        expect(JSON.stringify(requests.at(-1)).match(/NEWER_USER_INSTRUCTION/g)).toHaveLength(1);
+        const inputs = branch.filter(e => e.type === 'message' && e.message.role === 'user'
+          && JSON.stringify(e.message.content).includes('NEWER_USER_INSTRUCTION'));
+        expect(inputs).toHaveLength(1);
+        expect(branch.indexOf(inputs[0])).toBeGreaterThan(branch.indexOf(reductions[0]));
+      }, mode, [fold('fold', keep ? { keep_after_checkpoint: 1 } : {})], ({ session }) => {
+        session.subscribe(event => {
+          if (event.type === timing && event.toolName === 'backtrack' && !queued) {
+            queued = true;
+            void session[delivery]('NEWER_USER_INSTRUCTION');
+            if (timing === 'tool_execution_start') expect(session[delivery === 'steer' ? 'getSteeringMessages' : 'getFollowUpMessages']()).toHaveLength(1);
+          }
+        });
       });
     });
-  });
+  }
 }

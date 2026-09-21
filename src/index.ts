@@ -45,7 +45,7 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
     renderResult: renderer.renderResult,
     async execute(callId: string, args: unknown, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
       validateArguments(args);
-      if (signal?.aborted || ctx.hasPendingMessages()) throw new Error("Backtrack is unavailable while cancelled or user input is pending.");
+      if (signal?.aborted) throw new Error("Backtrack cancelled.");
       requestBacktrack(ctx, callId, engine.prepare(ctx, callId, args));
       // The host publishes this result only after committing; failure replaces it in place.
       const text = args.keep_after_checkpoint === undefined ? "Backtrack applied."
