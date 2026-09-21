@@ -308,7 +308,7 @@ test('native compact summarizes effective context, not removed tools; regenerate
   assert.deepEqual(host.errors, []);
 });
 
-for (const reversed of [false, true]) skillTest(`compact regenerates checkpoints internally and settles skills once (${reversed})`, async (t) => {
+for (const reversed of [false, true]) skillTest(`compact regenerates checkpoints without redundant skill state entries (${reversed})`, async (t) => {
   let compacting = false;
   const host = await setup(t, (_n, context) => {
     if (compacting) return [text('A fresh compacted baseline.')];
@@ -320,7 +320,7 @@ for (const reversed of [false, true]) skillTest(`compact regenerates checkpoints
   compacting = true;
   await host.session.compact();
   compacting = false;
-  assert.equal(count() - before, 1);
+  assert.equal(count() - before, 0, 'unchanged queues need no new state entry');
   assert.equal(latestState({ sessionManager: host.session.sessionManager }), undefined);
   await host.session.prompt('Continue.');
   assert.ok(latestState({ sessionManager: host.session.sessionManager }).checkpoints.some(c => c.id === 0));
@@ -396,7 +396,7 @@ for (const reversed of [false, true]) skillTest(`compact then repeated zero rebu
   assert.equal(steps, 3, JSON.stringify({ messages: host.session.messages, errors: host.errors }));
   assert.notEqual(frame().epoch, compactEpoch);
   assert.deepEqual(frame().checkpoints.map((checkpoint) => checkpoint.id), [0, 1]);
-  assert.equal(settlements() - before, 2, 'each zero backtrack settles skills exactly once');
+  assert.equal(settlements() - before, 0, 'context-only backtracks do not rewrite unchanged queues');
   phase = 'reload';
   await host.session.reload();
   await host.session.prompt('Continue after reload.');
