@@ -43,7 +43,7 @@ backtrack({
 使用未修改的 Pi 0.85.1 和 Node.js ≥22.19.0。见[运行与迁移说明](docs/public-extension.md)。
 
 ```sh
-pi install git:github.com/wjfjfm/pi-backtrack@refactor/public-extension
+pi install git:github.com/wjfjfm/pi-backtrack
 ```
 
 执行 `/reload` 或启动新会话。从修改版宿主迁移时必须新建会话，不自动转换旧的 native-backtrack 会话。
@@ -54,7 +54,7 @@ pi install git:github.com/wjfjfm/pi-backtrack@refactor/public-extension
 <summary>本地运行</summary>
 
 ```sh
-git clone --branch refactor/public-extension https://github.com/wjfjfm/pi-backtrack.git
+git clone https://github.com/wjfjfm/pi-backtrack.git
 cd pi-backtrack
 npm ci
 pi -e ./src/index.ts

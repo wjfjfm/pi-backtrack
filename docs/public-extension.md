@@ -1,6 +1,6 @@
 # Public-extension deployment
 
-This refactor targets unmodified Pi 0.85.1 and Node ≥22.19.0. It does not install a host patch. Local packaged artifacts were deployed on 2026-09-30; the worktree itself is not the installed source. The public-API implementation is maintained on `refactor/public-extension`; use the branch-qualified Git installation in the README rather than the old `main` baseline.
+This refactor targets unmodified Pi 0.85.1 and Node ≥22.19.0. It does not install a host patch. Local packaged artifacts were deployed on 2026-09-30; the worktree itself is not the installed source. The public-API implementation is now maintained on `main`; the temporary `refactor/public-extension` worktree has been consolidated into the primary checkout.
 
 ## Runtime contract
 

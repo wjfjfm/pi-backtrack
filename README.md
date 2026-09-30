@@ -43,7 +43,7 @@ backtrack({
 Uses unmodified Pi 0.85.1 and Node.js ≥22.19.0. See [runtime and migration](docs/public-extension.md).
 
 ```sh
-pi install git:github.com/wjfjfm/pi-backtrack@refactor/public-extension
+pi install git:github.com/wjfjfm/pi-backtrack
 ```
 
 Run `/reload` or start a new session. Migrating from the modified host requires a new session; old native-backtrack sessions are not converted.
@@ -54,7 +54,7 @@ When combined with [pi-dynamic-skill](https://github.com/wjfjfm/pi-dynamic-skill
 <summary>Run locally</summary>
 
 ```sh
-git clone --branch refactor/public-extension https://github.com/wjfjfm/pi-backtrack.git
+git clone https://github.com/wjfjfm/pi-backtrack.git
 cd pi-backtrack
 npm ci
 pi -e ./src/index.ts
