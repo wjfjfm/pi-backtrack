@@ -48,6 +48,8 @@ pi install git:github.com/wjfjfm/pi-backtrack@refactor/public-extension
 
 执行 `/reload` 或启动新会话。从修改版宿主迁移时必须新建会话，不自动转换旧的 native-backtrack 会话。
 
+配合 [pi-dynamic-skill](https://github.com/wjfjfm/pi-dynamic-skill) 时，先加载 backtrack，使技能留存依据折叠后的上下文，而非原始历史。
+
 <details>
 <summary>本地运行</summary>
 

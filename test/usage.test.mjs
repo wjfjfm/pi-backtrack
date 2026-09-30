@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { estimateTokens } from '@earendil-works/pi-coding-agent';
-import { checkpointTokens, estimateAfterFold } from '../dist/usage.js';
+import { checkpointTokens, estimateAfterFold, estimateRequestTokens } from '../dist/usage.js';
 const msg = content => ({ role: 'user', content, timestamp: 1 });
 const point = (tokens, boundary = 'prefix') => ({ id: 1, boundary, historyBoundary: boundary, tokens,
   marker: { role: 'custom', customType: 'backtrack:checkpoint', content: 'backtrack-checkpoint 1 context 18.2K/272K 7%', display: false, timestamp: 0 } });
@@ -22,6 +22,17 @@ test('unknown/zero checkpoint falls back to visible messages, system and active 
   const pi = { getActiveTools: () => ['read'], getAllTools: () => [active, { name: 'disabled', description: 'X'.repeat(10000) }] };
   const expected = Math.ceil(('SYSTEM'.length + JSON.stringify([active]).length) / 4) + estimateTokens(message) + estimateTokens(target.marker);
   assert.equal(estimateAfterFold([{ id: 'fold', message }], target, [target], ctx, pi), expected);
+});
+
+test('request recheck includes system and active tools without trusting or mutating saved usage', () => {
+  const message = { role: 'assistant', content: [{ type: 'text', text: 'retained answer' }], timestamp: 1,
+    usage: { input: 999999, output: 10 }, stopReason: 'stop' };
+  const before = structuredClone(message);
+  const tool = { name: 'read', description: 'Read', parameters: { type: 'object' } };
+  const ctx = { getSystemPrompt: () => 'SYSTEM' };
+  const pi = { getActiveTools: () => ['read'], getAllTools: () => [tool, { name: 'disabled', description: 'X'.repeat(10000) }] };
+  assert.equal(estimateRequestTokens([message], ctx, pi), Math.ceil(('SYSTEM'.length + JSON.stringify([tool]).length) / 4) + estimateTokens(message));
+  assert.deepEqual(message, before);
 });
 
 test('legacy formatted checkpoints remain usable, explicit unknown stays unknown', () => {

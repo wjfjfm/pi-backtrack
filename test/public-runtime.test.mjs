@@ -10,13 +10,15 @@ import {latestState} from '../dist/engine.js';
 const model={id:'public-test',name:'public-test',api:'openai-completions',provider:'public-test',baseUrl:'http://unused.invalid',reasoning:false,input:['text','image'],contextWindow:100000,maxTokens:2000,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}};
 const call=(name,id,args={})=>({type:'toolCall',name,id,arguments:args});
 const text=text=>({type:'text',text});
-async function fixture(t,respond,mode='parallel',summary,extensions=[]) {
+async function fixture(t,respond,mode='parallel',summary,extensions=[],reverseExtensions=false) {
  const cwd=await mkdtemp(join(tmpdir(),'public-backtrack-')),previous=process.env.PI_CODING_AGENT_DIR;
  process.env.PI_CODING_AGENT_DIR=join(cwd,'agent');
  t.after(async()=>{if(previous===undefined)delete process.env.PI_CODING_AGENT_DIR;else process.env.PI_CODING_AGENT_DIR=previous;await rm(cwd,{recursive:true,force:true});});
  const settingsManager=SettingsManager.inMemory({compaction:{enabled:false,keepRecentTokens:100},retry:{enabled:false}});
  const compactions=[];
- const loader=new DefaultResourceLoader({cwd,agentDir:join(cwd,'agent'),settingsManager,noContextFiles:true,noSkills:true,additionalExtensionPaths:[resolve(process.env.PI_BACKTRACK_EXTENSION || 'dist/index.js'),...extensions],extensionFactories:[pi=>{
+ const extensionPaths=[resolve(process.env.PI_BACKTRACK_EXTENSION || 'dist/index.js'),...extensions];
+ if(reverseExtensions)extensionPaths.reverse();
+ const loader=new DefaultResourceLoader({cwd,agentDir:join(cwd,'agent'),settingsManager,noContextFiles:true,noSkills:true,additionalExtensionPaths:extensionPaths,extensionFactories:[pi=>{
   pi.on('session_before_compact',event=>{compactions.push({reason:event.reason,willRetry:event.willRetry});});
   pi.registerProvider('public-test',{apiKey:'dummy',api:model.api,baseUrl:model.baseUrl,models:[model],streamSimple:(_model,context,options)=>{
    assert.ok(summary,'unexpected provider request outside the scripted agent stream');
@@ -42,7 +44,7 @@ async function fixture(t,respond,mode='parallel',summary,extensions=[]) {
   requests.push(JSON.parse(JSON.stringify(context)));
   const response=respond(requests.length,context,session);
   const content=Array.isArray(response)?response:[];
-  const message={role:'assistant',content,api:model.api,provider:model.provider,model:model.id,usage:{input:100,output:10,cacheRead:0,cacheWrite:0,totalTokens:110,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},stopReason:content.some(c=>c.type==='toolCall')?'toolUse':'stop',timestamp:Date.now()};
+  const message={role:'assistant',content,api:model.api,provider:model.provider,model:model.id,usage:response.usage??{input:100,output:10,cacheRead:0,cacheWrite:0,totalTokens:110,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},stopReason:content.some(c=>c.type==='toolCall')?'toolUse':'stop',timestamp:Date.now()};
   if(response.error){injectedErrors.add(response.error);message.stopReason='error';message.errorMessage=response.error;}
   const stream=createAssistantMessageEventStream();stream.push(response.error?{type:'error',reason:'error',error:message}:{type:'done',reason:message.stopReason,message});stream.end();return stream;
  };
@@ -55,6 +57,84 @@ async function fixture(t,respond,mode='parallel',summary,extensions=[]) {
   return session;
  }};
 }
+const metered=(response,input,output=10)=>Object.assign(response,{usage:{input,output,cacheRead:0,cacheWrite:0,totalTokens:input+output,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}});
+for(const mode of ['stale','manual','overflow','fresh','large','zero-usage'])test(`post-fold threshold recheck preserves ${mode} behavior`,async t=>{
+ const summaries=[];
+ const host=await fixture(t,(n,ctx)=>{
+  if(n===1)return [call('probe','explore',{value:'HIDDEN_EXPLORATION'})];
+  if(n===2)return metered([call('backtrack','fold',{checkpoint:0,message:'KEPT_FINDING'+(mode==='large'?'X'.repeat(400000):'')})],90000);
+  assert.ok(!JSON.stringify(ctx.messages).includes('HIDDEN_EXPLORATION'));
+  assert.ok(JSON.stringify(ctx.messages).includes('KEPT_FINDING'));
+  if(mode==='overflow'&&n===3)return {error:'maximum context length exceeded'};
+  if(mode==='fresh')return metered([text('Done')],90000);
+  if(mode==='zero-usage')return metered([text('Done')],0,0);
+  return [text('Done')];
+ },'parallel',context=>{
+  assert.ok(!JSON.stringify(context).includes('HIDDEN_EXPLORATION'));
+  summaries.push(context);return {text:'SUMMARY KEPT_FINDING'};
+ });
+ const events=[];
+ const unsubscribe=host.session.subscribe(event=>{if(event.type==='compaction_end')events.push(event);});
+ t.after(unsubscribe);
+ host.session.setAutoCompactionEnabled(true);
+ await host.session.prompt('Explore then fold');
+ if(mode==='manual')await host.session.compact();
+ assert.equal(host.requests.length,mode==='overflow'?4:3);
+ const expected=['stale','zero-usage'].includes(mode)?0:1;
+ assert.equal(summaries.length,expected);
+ assert.equal(host.sm.getBranch().filter(entry=>entry.type==='compaction').length,expected);
+ if(!expected){
+  assert.ok(events.some(event=>event.reason==='threshold'&&event.aborted),'host threshold attempt is cancelled, not summarized');
+  assert.ok(host.sm.getBranch().some(entry=>entry.customType===POLICY));
+ }else assert.equal(host.compactions.at(-1).reason,mode==='manual'?'manual':mode==='overflow'?'overflow':'threshold');
+});
+test('retained-tail fold ignores pre-fold usage carried by retained assistant messages',async t=>{
+ let summaries=0;
+ const host=await fixture(t,(n,ctx)=>{
+  if(n===1)return [call('probe','discard',{value:'DISCARD_BODY'})];
+  if(n===2)return [call('probe','keep',{value:'KEEP_BODY'})];
+  if(n===3)return metered([call('backtrack','fold',{checkpoint:1,keep_after_checkpoint:2,message:'KEEP_FINDING'})],90000);
+  assert.equal(n,4);
+  assert.ok(!JSON.stringify(ctx.messages).includes('DISCARD_BODY'));
+  assert.ok(JSON.stringify(ctx.messages).includes('KEEP_BODY'));
+  return [text('Done')];
+ },'parallel',()=>{summaries++;return {text:'UNEXPECTED_SUMMARY'};});
+ host.session.setAutoCompactionEnabled(true);
+ await host.session.prompt('Discard exploration but retain the tail');
+ assert.equal(host.requests.length,4);
+ assert.equal(summaries,0);
+ assert.equal(host.sm.getBranch().filter(entry=>entry.type==='compaction').length,0);
+});
+for(const recovery of ['reload','resume'])test(`stale usage recheck survives ${recovery} without a persisted suppression flag`,async t=>{
+ let summaries=0;
+ const host=await fixture(t,(n,ctx)=>{
+  if(n===1)return [call('probe','explore',{value:'HIDDEN_EXPLORATION'})];
+  if(n===2)return metered([call('backtrack','fold',{checkpoint:0,message:'KEPT_FINDING'})],90000);
+  if(n===3)return metered({error:'SCRIPTED_FAILURE_AFTER_FOLD'},0,0);
+  assert.equal(n,4);
+  assert.ok(!JSON.stringify(ctx.messages).includes('HIDDEN_EXPLORATION'));
+  assert.ok(JSON.stringify(ctx.messages).includes('KEPT_FINDING'));
+  return [text('Done')];
+ },'parallel',()=>{summaries++;return {text:'UNEXPECTED_SUMMARY'};});
+ host.session.setAutoCompactionEnabled(true);
+ await host.session.prompt('Explore then fold');
+ const session=recovery==='resume'?await host.reopen():host.session;
+ if(recovery==='reload')await session.reload();
+ await session.prompt('Continue');
+ assert.equal(host.requests.length,4);
+ assert.equal(summaries,0);
+ assert.equal(session.sessionManager.getBranch().filter(entry=>entry.type==='compaction').length,0);
+});
+test('threshold compaction without a fold remains native',async t=>{
+ const host=await fixture(t,n=>n===1?[call('probe','explore')]:n===2?metered([text('Done')],90000):[text('NATIVE_SUMMARY')],
+  'parallel',()=>assert.fail('native compaction uses the agent stream, not the extension summary adapter'));
+ host.session.setAutoCompactionEnabled(true);
+ await host.session.prompt('Explore without folding');
+ assert.equal(host.requests.length,3);
+ const compactions=host.sm.getBranch().filter(entry=>entry.type==='compaction');
+ assert.equal(compactions.length,1);
+ assert.match(compactions[0].summary,/NATIVE_SUMMARY/);
+});
 for(const compact of [false,true])test(`public extensions rebuild active skills after folding (compact=${compact})`, {skip:!process.env.PI_DYNAMIC_SKILL_EXTENSION}, async t=>{
  let skill;
  const host=await fixture(t,(n,ctx)=>{
@@ -85,6 +165,31 @@ for(const compact of [false,true])test(`public extensions rebuild active skills 
  const resumed=await host.reopen();await resumed.prompt('Continue after disk reopen');
  assert.equal(host.requests.length,5);
  assert.deepEqual(host.errors,[]);
+});
+for(const reverse of [false,true])test(`extension order determines whether folded discoveries expire (skills first=${reverse})`, {skip:!process.env.PI_DYNAMIC_SKILL_EXTENSION}, async t=>{
+ let root;
+ const host=await fixture(t,(n,ctx)=>{
+  const visible=JSON.stringify(ctx.messages);
+  if(n===1)return [call('read','discover',{path:root})];
+  if(n===2){
+   assert.ok(visible.includes('ORDER_CHILD_DESCRIPTION'));
+   return [call('backtrack','fold',{checkpoint:0,message:'ORDER_FINDING'})];
+  }
+  assert.equal(n,3);
+  assert.ok(visible.includes('ORDER_FINDING'));
+  assert.equal(visible.includes('ORDER_CHILD_DESCRIPTION'),reverse,
+   'skills-first sees raw anchors and retains a discovery that the final folded view should release');
+  return [text('Done')];
+ },'parallel',undefined,[resolve(process.env.PI_DYNAMIC_SKILL_EXTENSION)],reverse);
+ root=join(host.cwd,'dynamic-skill','skills','dynamic-skill','SKILL.md');
+ const directory=join(root,'..','skills','order-child');
+ await mkdir(directory,{recursive:true});
+ await writeFile(join(directory,'SKILL.md'),'---\nname: order-child\ndescription: ORDER_CHILD_DESCRIPTION\n---\n');
+ await host.session.prompt('Discover children, then fold.');
+ assert.equal(host.requests.length,3);
+ const state=host.sm.getEntries().findLast(entry=>entry.customType==='dynamic-skill:access-state');
+ assert.ok(state,'queue state was persisted');
+ assert.equal(state.data.discovery.length,reverse?1:0);
 });
 for(const recovery of ['manual','overflow'])test(`public extensions preserve skills across retained-tail and nested folds, ${recovery} compact and disk reopen`, {skip:!process.env.PI_DYNAMIC_SKILL_EXTENSION}, async t=>{
  let skill;const summaries=[];

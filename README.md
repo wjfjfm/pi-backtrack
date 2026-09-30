@@ -48,6 +48,8 @@ pi install git:github.com/wjfjfm/pi-backtrack@refactor/public-extension
 
 Run `/reload` or start a new session. Migrating from the modified host requires a new session; old native-backtrack sessions are not converted.
 
+When combined with [pi-dynamic-skill](https://github.com/wjfjfm/pi-dynamic-skill), load backtrack first so skill retention sees the folded context, not raw history.
+
 <details>
 <summary>Run locally</summary>
 

@@ -1,8 +1,9 @@
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { compact, findCutPoint, prepareBranchEntries, type ExtensionAPI, type ExtensionContext, type SessionEntry, type SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent";
+import { calculateContextTokens, compact, findCutPoint, prepareBranchEntries, shouldCompact, type ExtensionAPI, type ExtensionContext, type SessionEntry, type SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent";
 import { messageKey } from "./context.js";
-import { sourceNodes, type SourceNode } from "./projection.js";
-import { BacktrackEngine, operations } from "./engine.js";
+import { completeBatchEnd, sourceNodes, type SourceNode } from "./projection.js";
+import { BacktrackEngine, latestState, operations } from "./engine.js";
+import { estimateRequestTokens } from "./usage.js";
 
 const FENCE = "backtrack:compaction-boundary:v1";
 /** Virtual entries are local preparation input, never written as a second session. */
@@ -23,11 +24,25 @@ export async function compactEffective(
   pi: ExtensionAPI, engine: BacktrackEngine, event: SessionBeforeCompactEvent, ctx: ExtensionContext,
 ) {
   engine.assertCompatible(ctx);
-  if (!operations(ctx).length) return;
+  const folds = operations(ctx);
+  if (!folds.length) return;
   if (!ctx.model) throw new Error("No model selected for compaction.");
   const nodes = engine.nodes(ctx), raw = sourceNodes(ctx.sessionManager.buildContextEntries());
-  const entries = virtualEntries(nodes);
   const settings = event.preparation.settings;
+  if (event.reason === "threshold" && ctx.model.contextWindow > 0) {
+    const branch = ctx.sessionManager.getBranch();
+    const end = folds.map(({ policy }) => completeBatchEnd(branch, policy.assistantId)).filter(id => id !== undefined).at(-1);
+    const at = end ? branch.findIndex(entry => entry.id === end) : -1;
+    const freshUsage = branch.slice(at + 1).some(entry => entry.type === "message" && entry.message.role === "assistant"
+      && !["error", "aborted"].includes(entry.message.stopReason) && calculateContextTokens(entry.message.usage) > 0);
+    // The host checks its raw context before our request projection. Recheck only
+    // stale pre-fold usage; manual/overflow and fresh provider measurements win.
+    if (at >= 0 && !freshUsage) {
+      const messages = [...nodes.map(node => node.message), ...latestState(ctx)?.checkpoints.map(point => point.marker) ?? []];
+      if (!shouldCompact(estimateRequestTokens(messages, ctx, pi), ctx.model.contextWindow, settings)) return { cancel: true };
+    }
+  }
+  const entries = virtualEntries(nodes);
   const nativeCut = findCutPoint(entries, 0, entries.length, settings.keepRecentTokens);
   let cut = Math.max(nativeCut.firstKeptEntryIndex, safeSuffixStart(nodes, raw));
   // A safe suffix must also begin at a message boundary acceptable to the provider.
