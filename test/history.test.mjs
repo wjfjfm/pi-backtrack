@@ -15,13 +15,15 @@ test('strict arguments reject old schemas, unsafe IDs, fractions and non-string 
   for (const message of ['Continue', '', ' ']) assert.doesNotThrow(() => validateArguments({ checkpoint: 0, message }));
 });
 
-test('tool parameters describe an intact prefix and a checkpoint-relative work handoff', () => {
+test('tool parameters distinguish prefix preservation from a zero-baseline reset', () => {
   assert.deepEqual(Object.keys(backtrackParameters.properties), ['checkpoint', 'message', 'keep_after_checkpoint']);
   assert.deepEqual(backtrackParameters.required, ['checkpoint']);
   assert.doesNotThrow(() => validateArguments({ checkpoint: 0 }));
   assert.doesNotThrow(() => validateArguments({ checkpoint: 0, keep_after_checkpoint: 2 }));
   assert.doesNotThrow(() => validateArguments({ checkpoint: 0, message: 'Continue', keep_after_checkpoint: 2 }));
-  assert.match(backtrackParameters.properties.checkpoint.description, /Context through this checkpoint is preserved intact/);
+  assert.match(backtrackParameters.properties.checkpoint.description, /prefix is preserved.*except ordinary checkpoint 0 resets/);
+  assert.match(backtrackDescription, /Without keep_after_checkpoint, checkpoint 0 establishes a new native context baseline/);
+  assert.match(backtrackDescription, /not earlier baselines or handoffs/);
   assert.doesNotMatch(backtrackDescription, /managed|request-local|provider|hard limits|minimums to fill|if enabled/);
   assert.match(backtrackDescription, /0–20%.*simple tasks, 0–40%.*complex tasks, and 0–80%.*difficult tasks/);
   assert.match(backtrackDescription, /switching topics/);

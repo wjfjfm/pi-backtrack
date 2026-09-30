@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionEntry, SessionBoundaryDraft, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import type { ContextMessage } from "./context.js";
 import { STATE, POLICY, LEGACY_STATE, type BacktrackState, type Checkpoint, type BacktrackDetails, type BacktrackPolicy, type StoredState } from "./contracts.js";
 import { storeState, restoreStates, isStateEntry } from "./state.js";
@@ -18,7 +18,7 @@ export function policyOf(entry: SessionEntry): BacktrackPolicy | undefined {
   if (!data || typeof data.assistantId !== "string" || !Array.isArray(data.messages) || !data.details?.state) throw new Error("Corrupt backtrack policy.");
   return data;
 }
-export function operations(ctx: ExtensionContext): FoldOperation[] {
+export function operations(ctx: ExtensionContext): (FoldOperation & { policy: BacktrackPolicy })[] {
   const branch = branchOf(ctx), base = branch.findLastIndex(e => e.type === "compaction");
   return branch.slice(base + 1).flatMap(entry => {
     const policy = policyOf(entry);
@@ -68,8 +68,37 @@ export class BacktrackEngine {
   }
   nodes(ctx: ExtensionContext, input?: ContextMessage[]): SourceNode[] {
     this.assertCompatible(ctx);
-    const entries = ctx.sessionManager.buildSessionProjection().entries;
-    return applyFolds(branchOf(ctx), input ? bindSources(entries, input) : sourceNodes(entries), operations(ctx));
+    const branch = branchOf(ctx), entries = ctx.sessionManager.buildSessionProjection().entries;
+    const committed = new Set(branch.flatMap(entry => entry.type === "compaction"
+      ? [(entry.details as { backtrack?: string } | undefined)?.backtrack] : []));
+    // Payload is published before its compaction commit. An interrupted batch must
+    // still project the registered policy, not a duplicate half-published baseline.
+    const nodes = (input ? bindSources(entries, input) : sourceNodes(entries)).filter(({ message }) =>
+      message.role !== "custom" || message.customType !== "backtrack:baseline"
+      || committed.has((message.details as { backtrack: string }).backtrack));
+    return applyFolds(branch, nodes, operations(ctx));
+  }
+  /** The host commits these entries only after the complete tool batch. */
+  resetBoundary(ctx: ExtensionContext, event: TurnEndEvent): SessionBoundaryDraft[] | undefined {
+    const operation = operations(ctx).at(-1);
+    if (!operation || operation.policy.details.target !== 0 || operation.policy.keepAfterId !== undefined) return;
+    const branch = branchOf(ctx);
+    if (!completeBatchEnd(branch, operation.policy.assistantId)) return;
+    const staged = branch.find(entry => entry.type === "custom_message" && entry.customType === "backtrack:baseline"
+      && (entry.details as { backtrack?: string } | undefined)?.backtrack === operation.id);
+    if (!staged && operation.policy.assistantId !== event.messageEntryId) return;
+    const entries: SessionBoundaryDraft[] = [];
+    if (!staged) entries.push({ type: "custom_message", customType: "backtrack:baseline", display: false,
+      content: operation.policy.messages.flatMap(message => typeof message.content === "string"
+        ? [{ type: "text" as const, text: message.content }] : message.content), details: { backtrack: operation.id } });
+    // Publish payload first, commit the new native root last. sync() has just saved
+    // an invisible state entry, so this retained range contains no old conversation.
+    // If publication was interrupted, retain the existing payload and all later work.
+    const firstKept = staged ?? branch.at(-1)!;
+    if (!staged && (firstKept.type !== "custom" || firstKept.customType !== STATE)) throw new Error("Missing zero-reset commit boundary.");
+    return [...entries, { type: "compaction", firstKeptEntryId: firstKept.id,
+      summary: "Working context reset by backtrack(0). Retained dialogue and agent handoff follow.",
+      details: { backtrack: operation.id } }, ...event.entries];
   }
   private usage(ctx: ExtensionContext) {
     const branch = branchOf(ctx), last = operations(ctx).at(-1);
@@ -100,13 +129,29 @@ export class BacktrackEngine {
     const previous = revision && structuredClone(revision);
     const before = JSON.stringify(state);
     if (!state) {
+      const base = branch.findLast(entry => entry.type === "compaction");
+      const resetId = base?.type === "compaction" ? (base.details as { backtrack?: string } | undefined)?.backtrack : undefined;
+      const reset = resetId ? branch.find(entry => entry.id === resetId) : undefined;
+      const resetPolicy = reset && policyOf(reset);
       const firstUser = nodes.findIndex(node => node.message.role === "user");
-      const prefix = nodes.slice(0, firstUser < 0 ? nodes.length : firstUser);
+      const prefix = resetPolicy ? nodes.slice(0, nodes.findIndex(node => node.id === base!.id) + 1)
+        : nodes.slice(0, firstUser < 0 ? nodes.length : firstUser);
       const boundary = prefix.at(-1)?.id ?? null;
       const rawIndex = firstUser < 0 ? -1 : branch.findIndex(e => e.id === nodes[firstUser]!.id);
       const historyBoundary = rawIndex < 0 ? boundary : branch.slice(0, rawIndex).findLast(e => e.type !== "label")?.id ?? null;
       state = { version: 2, epoch: randomUUID(), base: baseOf(ctx), next: 1, cursor: boundary, checkpoints: [] };
-      this.checkpoint(ctx, state, boundary, historyBoundary, true);
+      this.checkpoint(ctx, state, boundary, resetPolicy && base?.type === "compaction" ? base.firstKeptEntryId : historyBoundary, true);
+      if (resetPolicy) {
+        let index = prefix.length;
+        while (nodes[index]?.message.role === "custom") index++;
+        const end = nodes[index - 1]?.id ?? boundary;
+        if (end !== boundary) this.checkpoint(ctx, state, end);
+        state.cursor = end;
+        state.lastTransaction = reset!.id;
+        state.usage = { before: resetPolicy.details.before,
+          after: estimateAfterFold(nodes, state.checkpoints[0]!, state.checkpoints, ctx, this.pi), afterEstimated: true,
+          ...(ctx.model ? { window: ctx.model.contextWindow } : {}) };
+      }
     }
     for (const entry of ctx.sessionManager.getEntries()) {
       const old = entry.type === "custom" && isStateEntry(entry) ? entry.data as StoredState : policyOf(entry)?.details.state;

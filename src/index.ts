@@ -24,8 +24,12 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
     try { return await compactEffective(pi, engine, event, ctx); }
     catch (error) { warn(ctx, error); return { cancel: true }; }
   });
-  pi.on("turn_end", (_event, ctx) => {
-    try { engine.sync(ctx); renderer.refresh(ctx); }
+  pi.on("turn_end", (event, ctx) => {
+    try {
+      engine.sync(ctx); renderer.refresh(ctx);
+      const entries = engine.resetBoundary(ctx, event);
+      if (entries) return { entries };
+    }
     catch (error) { ctx.abort(); warn(ctx, error); }
   });
   pi.on("context", (event, ctx) => {

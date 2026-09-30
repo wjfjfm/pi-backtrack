@@ -4,9 +4,9 @@ import {mkdtemp,rm,mkdir,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {createAgentSession,DefaultResourceLoader,SessionManager,SettingsManager} from '@earendil-works/pi-coding-agent';
-import {createAssistantMessageEventStream} from '@earendil-works/pi-ai';
+import {createAssistantMessageEventStream,getCurrentSystemPrompt,getCurrentTools} from '@earendil-works/pi-ai';
 import {POLICY} from '../dist/contracts.js';
-import {latestState} from '../dist/engine.js';
+import {latestState,operations} from '../dist/engine.js';
 const model={id:'public-test',name:'public-test',api:'openai-completions',provider:'public-test',baseUrl:'http://unused.invalid',reasoning:false,input:['text','image'],contextWindow:100000,maxTokens:2000,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}};
 const call=(name,id,args={})=>({type:'toolCall',name,id,arguments:args});
 const text=text=>({type:'text',text});
@@ -16,17 +16,18 @@ async function fixture(t,respond,mode='parallel',summary,extensions=[],reverseEx
  t.after(async()=>{if(previous===undefined)delete process.env.PI_CODING_AGENT_DIR;else process.env.PI_CODING_AGENT_DIR=previous;await rm(cwd,{recursive:true,force:true});});
  const settingsManager=SettingsManager.inMemory({compaction:{enabled:false,keepRecentTokens:100},retry:{enabled:false}});
  const compactions=[];
+ const summaryStream=(_model,context,options)=>{
+  assert.ok(summary,'unexpected provider request outside the scripted agent stream');
+  const response=summary(context,options);
+  const message={role:'assistant',content:[text(response.text??'SUMMARY KEY_FINDING')],api:model.api,provider:model.provider,model:model.id,
+   usage:{input:300,output:20,cacheRead:0,cacheWrite:0,totalTokens:320,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},stopReason:response.error?'error':'stop',timestamp:Date.now(),...(response.error?{errorMessage:response.error}:{})};
+  const stream=createAssistantMessageEventStream();stream.push(response.error?{type:'error',reason:'error',error:message}:{type:'done',reason:'stop',message});stream.end();return stream;
+ };
  const extensionPaths=[resolve(process.env.PI_BACKTRACK_EXTENSION || 'dist/index.js'),...extensions];
  if(reverseExtensions)extensionPaths.reverse();
  const loader=new DefaultResourceLoader({cwd,agentDir:join(cwd,'agent'),settingsManager,noContextFiles:true,noSkills:true,additionalExtensionPaths:extensionPaths,extensionFactories:[pi=>{
   pi.on('session_before_compact',event=>{compactions.push({reason:event.reason,willRetry:event.willRetry});});
-  pi.registerProvider('public-test',{apiKey:'dummy',api:model.api,baseUrl:model.baseUrl,models:[model],streamSimple:(_model,context,options)=>{
-   assert.ok(summary,'unexpected provider request outside the scripted agent stream');
-   const response=summary(context,options);
-   const message={role:'assistant',content:[text(response.text??'SUMMARY KEY_FINDING')],api:model.api,provider:model.provider,model:model.id,
-    usage:{input:300,output:20,cacheRead:0,cacheWrite:0,totalTokens:320,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},stopReason:response.error?'error':'stop',timestamp:Date.now(),...(response.error?{errorMessage:response.error}:{})};
-   const stream=createAssistantMessageEventStream();stream.push(response.error?{type:'error',reason:'error',error:message}:{type:'done',reason:'stop',message});stream.end();return stream;
-  }});
+  pi.registerProvider('public-test',{apiKey:'dummy',api:model.api,baseUrl:model.baseUrl,models:[model],streamSimple:summaryStream});
   configure(pi);
   for(const name of ['probe','fail'])pi.registerTool({name,label:name,description:name,executionMode:mode,parameters:{type:'object',properties:{value:{type:'string'}}},execute:async(_id,args)=>{
    if(name==='fail')throw new Error('SIBLING_FAILURE');
@@ -41,7 +42,13 @@ async function fixture(t,respond,mode='parallel',summary,extensions=[],reverseEx
   assert.deepEqual(errors,[]);
   assert.deepEqual(session.messages.filter(m=>m.role==='assistant'&&m.stopReason==='error').map(m=>m.errorMessage).filter(error=>!injectedErrors.has(error)),[]);
  });await session.bindExtensions({onError:e=>errors.push(e)});
- session.agent.streamFunction=(_model,context)=>{
+ session.agent.streamFunction=(_model,context,options)=>{
+  if(options?.signal?.aborted){
+   const error={role:'assistant',content:[],api:model.api,provider:model.provider,model:model.id,stopReason:'aborted',timestamp:Date.now(),
+    usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
+   const stream=createAssistantMessageEventStream();stream.push({type:'error',reason:'aborted',error});stream.end();return stream;
+  }
+  if(summary&&JSON.stringify(context.messages[0]).includes('You are a context summarization assistant.'))return summaryStream(_model,context,options);
   requests.push(JSON.parse(JSON.stringify(context)));
   const response=respond(requests.length,context,session);
   const content=Array.isArray(response)?response:[];
@@ -58,6 +65,144 @@ async function fixture(t,respond,mode='parallel',summary,extensions=[],reverseEx
   return session;
  }};
 }
+test('zero reset leaves system/tools unchanged and the new request prefix stable across turns, reload and resume',async t=>{
+ let original,baseline,sessionId;
+ const host=await fixture(t,(n,context,session)=>{
+  if(n===1){original=structuredClone(context.messages);sessionId=session.sessionId;return [call('backtrack','zero',{checkpoint:0,message:'STABLE_HANDOFF'})];}
+  assert.equal(session.sessionId,sessionId);
+  assert.equal(getCurrentSystemPrompt(context.messages),getCurrentSystemPrompt(original));
+  assert.deepEqual(getCurrentTools(context.messages),getCurrentTools(original));
+  if(n===2){baseline=structuredClone(context.messages);return [call('probe','next-tool')];}
+  // Compare complete request messages, including timestamps: no earlier marker,
+  // summary, payload or system checkpoint is regenerated as usage changes.
+  assert.deepEqual(context.messages.slice(0,baseline.length),baseline);
+  return [text('Done')];
+ });
+ await host.session.prompt('Reset then continue');
+ await host.session.prompt('Another turn');
+ await host.session.reload();await host.session.prompt('After reload');
+ const resumed=await host.reopen();await resumed.prompt('After resume');
+ assert.equal(host.requests.length,6);
+ const branch=resumed.sessionManager.getBranch();
+ assert.equal(branch.filter(entry=>entry.type==='compaction').length,1);
+ const state=latestState({sessionManager:resumed.sessionManager});
+ const prefix=JSON.stringify(baseline);
+ assert.ok(!prefix.includes(state.epoch));
+ assert.ok(!prefix.includes(branch.find(entry=>entry.type==='compaction').id));
+});
+test('zero resets create native roots without replaying earlier policies or retaining earlier handoffs',async t=>{
+ const host=await fixture(t,(n,context,session)=>{
+  const visible=JSON.stringify(context.messages);
+  if(n===1)return [call('probe','explore',{value:'ARCHIVED_TOOL'})];
+  if(n===2)return [call('backtrack','zero-1',{checkpoint:0,message:'HANDOFF_ONE'})];
+  assert.doesNotMatch(visible,/ARCHIVED_TOOL/);
+  const sm=session.sessionManager,branch=sm.getBranch(),base=branch.findLast(entry=>entry.type==='compaction');
+  assert.ok(base);
+  assert.deepEqual(operations({sessionManager:sm}),[]);
+  const projected=sm.buildSessionProjection().entries;
+  assert.ok(projected.every(entry=>branch.indexOf(entry.sourceEntry)>=branch.findIndex(entry=>entry.id===base.firstKeptEntryId)));
+  assert.ok(!projected.some(entry=>entry.sourceEntry.type==='message'&&entry.sourceEntry.message.role==='toolResult'));
+  const state=latestState({sessionManager:sm});
+  assert.equal(state.base,base.id);assert.equal(state.checkpoints[0].boundary,base.id);
+  assert.equal(state.checkpoints[0].historyBoundary,base.firstKeptEntryId);
+  if(n===3){assert.match(visible,/ORIGINAL_TASK/);assert.match(visible,/HANDOFF_ONE/);return [call('backtrack','zero-2',{checkpoint:0,message:'HANDOFF_TWO'})];}
+  assert.doesNotMatch(visible,/ORIGINAL_TASK|HANDOFF_ONE/);
+  if(n===4){assert.match(visible,/HANDOFF_TWO/);return [call('backtrack','zero-3',{checkpoint:0,message:'HANDOFF_THREE'})];}
+  assert.doesNotMatch(visible,/HANDOFF_TWO/);assert.match(visible,/HANDOFF_THREE/);
+  return [text('Done')];
+ });
+ await host.session.prompt('ORIGINAL_TASK');
+ assert.equal(host.requests.length,5);
+ const bases=host.sm.getBranch().filter(entry=>entry.type==='compaction');assert.equal(bases.length,3);
+ assert.match(JSON.stringify(host.sm.getBranch()),/ORIGINAL_TASK|ARCHIVED_TOOL|HANDOFF_ONE/);
+ const reopened=await host.reopen();await reopened.prompt('Continue');
+ assert.equal(reopened.sessionManager.getBranch().filter(entry=>entry.type==='compaction').length,3);
+ assert.equal(host.requests.length,6);
+});
+test('zero reset replaces earlier native summaries and stale usage without invoking a summarizer',async t=>{
+ const host=await fixture(t,(n,context)=>{
+  if(n===1){assert.match(JSON.stringify(context.messages),/PREVIOUS_SUMMARY/);return metered([call('backtrack','zero',{checkpoint:0,message:'CURRENT_HANDOFF'})],90000);}
+  assert.doesNotMatch(JSON.stringify(context.messages),/PREVIOUS_SUMMARY/);
+  assert.match(JSON.stringify(context.messages),/CURRENT_HANDOFF/);
+  return [text('Done')];
+ });
+ host.sm.appendCompaction('PREVIOUS_SUMMARY',null,1000);
+ host.session.setAutoCompactionEnabled(true);
+ await host.session.prompt('New task');
+ assert.equal(host.requests.length,2);
+ assert.equal(host.sm.getBranch().filter(entry=>entry.type==='compaction').length,2);
+ assert.deepEqual(host.compactions,[]);
+ assert.ok(host.session.getContextUsage().tokens<90000);
+});
+test('an interrupted zero publication preserves handoff and resumes the native commit without duplication',async t=>{
+ const host=await fixture(t,(n,context)=>{
+  if(n===1)return [call('backtrack','zero',{checkpoint:0,message:'DURABLE_HANDOFF'})];
+  assert.equal(JSON.stringify(context.messages).split('DURABLE_HANDOFF').length-1,1);
+  if(n===4)return [call('backtrack','again',{checkpoint:0,message:'DURABLE_HANDOFF'})];
+  if(n===5){assert.match(JSON.stringify(context.messages),/WORK_AFTER_INTERRUPTION/);assert.doesNotMatch(JSON.stringify(context.messages),/ORIGINAL_REQUEST/);}
+  return [text('Continued')];
+ });
+ await host.session.prompt('ORIGINAL_REQUEST');
+ const branch=host.sm.getBranch(),staged=branch.findIndex(entry=>entry.customType==='backtrack:baseline');
+ assert.ok(staged>=0);
+ const interrupted=join(host.cwd,'interrupted.jsonl');
+ await writeFile(interrupted,[host.sm.getHeader(),...branch.slice(0,staged+1)].map(entry=>JSON.stringify(entry)).join('\n')+'\n');
+ const resumed=await host.reopen(interrupted);
+ await resumed.prompt('WORK_AFTER_INTERRUPTION');
+ const recovered=resumed.sessionManager.getBranch();
+ assert.equal(recovered.filter(entry=>entry.type==='compaction').length,1);
+ assert.equal(recovered.filter(entry=>entry.customType==='backtrack:baseline').length,1);
+ const native=JSON.stringify(resumed.sessionManager.buildSessionProjection().messages);
+ assert.match(native,/DURABLE_HANDOFF/);assert.match(native,/WORK_AFTER_INTERRUPTION/);
+ assert.doesNotMatch(native,/"toolCall"/);
+ await resumed.reload();await resumed.prompt('Still here');
+ assert.equal(host.requests.length,5);
+ assert.equal(resumed.sessionManager.getBranch().filter(entry=>entry.type==='compaction').length,2);
+});
+for(const mode of ['parallel','sequential'])test(`zero reset waits for siblings and preserves queued custom messages (${mode})`,async t=>{
+ const host=await fixture(t,(n,context)=>{
+  if(n===1)return [call('backtrack','zero',{checkpoint:0,message:'SAFE_HANDOFF'}),call('fail','failed'),call('notify','notify')];
+  assert.match(JSON.stringify(context.messages),/SAFE_HANDOFF/);
+  assert.match(JSON.stringify(context.messages),/UNRELATED_NOTICE/);
+  assert.doesNotMatch(JSON.stringify(context.messages),/SIBLING_FAILURE/);
+  return [text('Done')];
+ },mode,undefined,[],false,pi=>{
+  pi.registerTool({name:'notify',label:'notify',description:'notify',executionMode:mode,parameters:{type:'object',properties:{}},
+   async execute(){pi.sendMessage({customType:'notice',content:'UNRELATED_NOTICE',display:false},{triggerTurn:false});return {content:[text('sent')],details:undefined};}});
+ });
+ await host.session.prompt('Reset after all tools');
+ assert.equal(host.requests.length,2);
+ const branch=host.sm.getBranch(),base=branch.findIndex(entry=>entry.type==='compaction');
+ assert.equal(branch.slice(0,base).filter(entry=>entry.type==='message'&&entry.message.role==='toolResult').length,3);
+});
+test('aborting after a registered zero reset does not force continuation or lose the handoff',async t=>{
+ const host=await fixture(t,(n,context)=>{
+  if(n===1)return [call('backtrack','zero',{checkpoint:0,message:'ABORT_SAFE_HANDOFF'}),call('wait','wait')];
+  assert.match(JSON.stringify(context.messages),/ABORT_SAFE_HANDOFF/);return [text('Done')];
+ },'parallel',undefined,[],false,pi=>{
+  pi.registerTool({name:'wait',label:'wait',description:'wait for cancellation',parameters:{type:'object',properties:{}},
+   async execute(_id,_args,signal){
+    if(!signal.aborted)await new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true}));
+    return {content:[text('Stopped')],details:undefined};
+   }});
+ });
+ let aborted=false;
+ host.session.subscribe(event=>{
+  if(event.type==='tool_execution_end'&&event.toolName==='backtrack'&&!aborted){aborted=true;setTimeout(()=>void host.session.abort(),0);}
+ });
+ await host.session.prompt('Reset then stop');
+ assert.equal(aborted,true);assert.equal(host.requests.length,1);
+ assert.equal(host.sm.getBranch().filter(entry=>entry.type==='compaction').length,1);
+ const resumed=await host.reopen();await resumed.prompt('Continue');assert.equal(host.requests.length,2);
+});
+test('zero retained-tail folds do not reset the native baseline',async t=>{
+ const host=await fixture(t,n=>n===1?[call('probe','one')]:n===2?[call('probe','two')]:n===3?
+  [call('backtrack','keep',{checkpoint:0,keep_after_checkpoint:2,message:'TAIL_HANDOFF'})]:[text('Done')]);
+ await host.session.prompt('Keep the tail');
+ assert.equal(host.requests.length,4);
+ assert.equal(host.sm.getBranch().filter(entry=>entry.type==='compaction').length,0);
+ assert.equal(operations({sessionManager:host.sm}).length,1);
+});
 test('native context edits remain authoritative across folds and disk reopen',async t=>{
  const host=await fixture(t,(n,context)=>{
   if(n===1)return [call('probe','explore',{value:'ORIGINAL_BODY'})];
@@ -120,7 +265,7 @@ for(const mode of ['stale','manual','overflow','fresh','large','zero-usage'])tes
  const summaries=[];
  const host=await fixture(t,(n,ctx)=>{
   if(n===1)return [call('probe','explore',{value:'HIDDEN_EXPLORATION'})];
-  if(n===2)return metered([call('backtrack','fold',{checkpoint:0,message:'KEPT_FINDING'+(mode==='large'?'X'.repeat(400000):'')})],90000);
+  if(n===2)return metered([call('backtrack','fold',{checkpoint:1,message:'KEPT_FINDING'+(mode==='large'?'X'.repeat(400000):'')})],90000);
   assert.ok(!JSON.stringify(ctx.messages).includes('HIDDEN_EXPLORATION'));
   assert.ok(JSON.stringify(ctx.messages).includes('KEPT_FINDING'));
   if(mode==='overflow'&&n===3)return {error:'maximum context length exceeded'};
@@ -167,7 +312,7 @@ for(const recovery of ['reload','resume'])test(`stale usage recheck survives ${r
  let summaries=0;
  const host=await fixture(t,(n,ctx)=>{
   if(n===1)return [call('probe','explore',{value:'HIDDEN_EXPLORATION'})];
-  if(n===2)return metered([call('backtrack','fold',{checkpoint:0,message:'KEPT_FINDING'})],90000);
+  if(n===2)return metered([call('backtrack','fold',{checkpoint:1,message:'KEPT_FINDING'})],90000);
   if(n===3)return metered({error:'SCRIPTED_FAILURE_AFTER_FOLD'},0,0);
   assert.equal(n,4);
   assert.ok(!JSON.stringify(ctx.messages).includes('HIDDEN_EXPLORATION'));
@@ -184,11 +329,13 @@ for(const recovery of ['reload','resume'])test(`stale usage recheck survives ${r
  assert.equal(session.sessionManager.getBranch().filter(entry=>entry.type==='compaction').length,0);
 });
 test('threshold compaction without a fold remains native',async t=>{
- const host=await fixture(t,n=>n===1?[call('probe','explore')]:n===2?metered([text('Done')],90000):[text('NATIVE_SUMMARY')],
-  'parallel',()=>assert.fail('native compaction uses the agent stream, not the extension summary adapter'));
+ let summaries=0;
+ const host=await fixture(t,n=>n===1?[call('probe','explore')]:metered([text('Done')],90000),
+  'parallel',()=>{summaries++;return {text:'NATIVE_SUMMARY'};});
  host.session.setAutoCompactionEnabled(true);
  await host.session.prompt('Explore without folding');
- assert.equal(host.requests.length,3);
+ assert.equal(host.requests.length,2);
+ assert.equal(summaries,1);
  const compactions=host.sm.getBranch().filter(entry=>entry.type==='compaction');
  assert.equal(compactions.length,1);
  assert.match(compactions[0].summary,/NATIVE_SUMMARY/);
@@ -224,19 +371,19 @@ for(const compact of [false,true])test(`public extensions rebuild active skills 
  assert.equal(host.requests.length,5);
  assert.deepEqual(host.errors,[]);
 });
-for(const reverse of [false,true])test(`extension order determines whether folded discoveries expire (skills first=${reverse})`, {skip:!process.env.PI_DYNAMIC_SKILL_EXTENSION}, async t=>{
+for(const checkpoint of [0,1])for(const reverse of [false,true])test(`discovery retention at checkpoint ${checkpoint} (skills first=${reverse})`, {skip:!process.env.PI_DYNAMIC_SKILL_EXTENSION}, async t=>{
  let root;
  const host=await fixture(t,(n,ctx)=>{
   const visible=JSON.stringify(ctx.messages);
   if(n===1)return [call('read','discover',{path:root})];
   if(n===2){
    assert.ok(visible.includes('ORDER_CHILD_DESCRIPTION'));
-   return [call('backtrack','fold',{checkpoint:0,message:'ORDER_FINDING'})];
+   return [call('backtrack','fold',{checkpoint,message:'ORDER_FINDING'})];
   }
   assert.equal(n,3);
   assert.ok(visible.includes('ORDER_FINDING'));
-  assert.equal(visible.includes('ORDER_CHILD_DESCRIPTION'),reverse,
-   'skills-first sees raw anchors and retains a discovery that the final folded view should release');
+  assert.equal(visible.includes('ORDER_CHILD_DESCRIPTION'),checkpoint!==0&&reverse,
+   'zero resets remove native anchors before either context hook; nonzero folds remain order-dependent');
   return [text('Done')];
  },'parallel',undefined,[resolve(process.env.PI_DYNAMIC_SKILL_EXTENSION)],reverse);
  root=join(host.cwd,'dynamic-skill','skills','dynamic-skill','SKILL.md');
@@ -247,7 +394,7 @@ for(const reverse of [false,true])test(`extension order determines whether folde
  assert.equal(host.requests.length,3);
  const state=host.sm.getEntries().findLast(entry=>entry.customType==='dynamic-skill:access-state');
  assert.ok(state,'queue state was persisted');
- assert.equal(state.data.discovery.length,reverse?1:0);
+ assert.equal(state.data.discovery.length,checkpoint!==0&&reverse?1:0);
 });
 for(const recovery of ['manual','overflow'])test(`public extensions preserve skills across retained-tail and nested folds, ${recovery} compact and disk reopen`, {skip:!process.env.PI_DYNAMIC_SKILL_EXTENSION}, async t=>{
  let skill;const summaries=[];
@@ -261,7 +408,7 @@ for(const recovery of ['manual','overflow'])test(`public extensions preserve ski
   if(n===4){
    assert.ok(visible.includes('RETAINED_PROBE'));
    assert.equal(visible.split('TAIL_FINDING').length-1,1);
-   return [call('backtrack','nested',{checkpoint:0,message:'NESTED_FINDING'})];
+   return [call('backtrack','nested',{checkpoint:0,message:'NESTED_FINDING '.repeat(100)})];
   }
   assert.ok(!visible.includes('RETAINED_PROBE'));
   assert.ok(visible.includes('NESTED_FINDING'));
@@ -475,19 +622,21 @@ test('queued user input survives a registered fold and reaches the next request'
  assert.equal(host.sm.getBranch().filter(entry=>entry.customType===POLICY).length,1);
 });
 
-test('intact folded user images survive until text-only compaction replaces their prefix',async t=>{
+test('intact folded user images survive native reset and disk reopen until text-only compaction',async t=>{
+ let compacted=false;
  const images=context=>context.messages.flatMap(message=>Array.isArray(message.content)?message.content:[]).filter(part=>part.type==='image');
  const image={type:'image',mimeType:'image/png',data:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII='};
  const host=await fixture(t,(n,context)=>{
   if(n===1){assert.deepEqual(images(context),[image],'host must deliver the original image before backtrack');return [call('backtrack','fold',{checkpoint:0,message:'IMAGE_FINDING'})];}
-  assert.deepEqual(images(context),n===2?[image]:[]);
+  assert.deepEqual(images(context),compacted?[]:[image]);
   return [text('Image finding '.repeat(1000))];
  },'parallel',context=>{assert.deepEqual(images(context),[]);return {text:'SUMMARY IMAGE_FINDING'};});
  await host.session.prompt('Inspect this image. '.repeat(100),{images:[image]});
  assert.deepEqual(host.errors,[]);
  assert.deepEqual(host.session.messages.filter(message=>message.role==='assistant'&&message.stopReason==='error').map(message=>message.errorMessage),[]);
- await host.session.compact();await host.session.prompt('Continue');
- assert.equal(host.requests.length,3);
+ const reopened=await host.reopen();await reopened.prompt('Continue with image');
+ await reopened.compact();compacted=true;await reopened.prompt('Continue');
+ assert.equal(host.requests.length,4);
 });
 
 for(const compactBeforeFork of [false,true])test(`checkpoint deltas survive disk fork, reload, compact and resume (compact before fork=${compactBeforeFork})`,async t=>{
