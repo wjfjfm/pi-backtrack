@@ -5,9 +5,10 @@ import { once } from 'node:events';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-// Run the modified host directly from source; never patch or install a global Pi.
-const native = resolve(process.env.PI_NATIVE_SOURCE || '../pi-native-backtrack');
+// Execute the published package's CLI, never the installed or modified host.
+const cli = fileURLToPath(new URL('./bundle/cli.js', import.meta.resolve('@earendil-works/pi-coding-agent')));
 
 for (const mode of ['text', 'json', 'rpc']) test(`real CLI ${mode} mode backtracks and continues without user intervention`, { timeout: 30000 }, async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), 'backtrack-cli-'));
@@ -39,9 +40,8 @@ export default function(pi) {
   });
 }
 `);
-  const args = [join(native, 'node_modules/tsx/dist/cli.mjs'), '--tsconfig', join(native, 'tsconfig.json'),
-    join(native, 'packages/coding-agent/src/cli.ts'), '--mode', mode, '--no-session',
-    '--provider', 'backtrack-cli-test', '--model', 'test', '-e', resolve('src/index.ts'), '-e', provider];
+  const args = [cli, '--mode', mode, '--no-session',
+    '--provider', 'backtrack-cli-test', '--model', 'test', '-e', resolve(process.env.PI_BACKTRACK_EXTENSION || 'src/index.ts'), '-e', provider];
   if (mode !== 'rpc') args.push('-p', 'Complete the task.');
   const child = spawn(process.execPath, args, { cwd, detached: process.platform !== 'win32',
     env: { ...process.env, PI_CODING_AGENT_DIR: join(cwd, 'agent') }, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -49,7 +49,7 @@ export default function(pi) {
     if (child.exitCode === null && child.signalCode === null) {
       const closed = once(child, 'close');
       if (process.platform === 'win32') child.kill('SIGKILL');
-      else process.kill(-child.pid, 'SIGKILL'); // tsx also owns a child process
+      else process.kill(-child.pid, 'SIGKILL');
       await closed;
     }
     await rm(cwd, { recursive: true, force: true, maxRetries: 3 });

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { historyBetween, renderHistory } from '../dist/history.js';
-import { estimateText, estimateMessages, excerpt, formatCount, graphemes } from '../dist/tokens.js';
+import { estimateText, excerpt, formatCount, graphemes } from '../dist/tokens.js';
 import { backtrackParameters, validateArguments } from '../dist/schema.js';
 import { backtrackDescription } from '../dist/tool-description.js';
 const plain = (message) => message.content.filter((part) => part.type === 'text').map((part) => part.text).join('');
@@ -23,9 +23,10 @@ test('tool parameters describe an intact prefix and a checkpoint-relative work h
   assert.doesNotThrow(() => validateArguments({ checkpoint: 0, message: 'Continue', keep_after_checkpoint: 2 }));
   assert.match(backtrackParameters.properties.checkpoint.description, /Context through this checkpoint is preserved intact/);
   assert.doesNotMatch(backtrackDescription, /managed|request-local|provider|hard limits|minimums to fill|if enabled/);
-  assert.match(backtrackDescription, /0-20%.*short tasks, 0-40%.*standard tasks, and 0-80%.*difficult tasks/);
-  assert.match(backtrackDescription, /user clearly changes topics/);
-  assert.match(backtrackDescription, /returning to the main task/);
+  assert.match(backtrackDescription, /0–20%.*simple tasks, 0–40%.*complex tasks, and 0–80%.*difficult tasks/);
+  assert.match(backtrackDescription, /switching topics/);
+  assert.match(backtrackDescription, /returning from a completed side task/);
+  assert.equal(backtrackParameters.properties.terminate, undefined);
   const handoff = backtrackParameters.properties.message.description;
   for (const phrase of ['after the target checkpoint', 'what you did', 'what you examined', 'what you learned',
     'failed attempts and their lessons', 'what you plan to do next']) assert.ok(handoff.includes(phrase));
@@ -35,7 +36,6 @@ test('classified token estimates and omission formatting preserve grapheme bound
   assert.equal(estimateText('abcd'), 1);
   assert.equal(estimateText('中文'), 3);
   assert.equal(estimateText('!?'), 2);
-  assert.equal(estimateMessages([{ role: 'bashExecution', command: 'private', output: 'hidden'.repeat(100), excludeFromContext: true, timestamp: 0 }]), 0);
   assert.equal(formatCount(2000), '2000');
   assert.equal(formatCount(2400), '2.4K');
   assert.equal(formatCount(10000), '10K');

@@ -4,6 +4,7 @@
   "private": true,
   "description": "Agent-controlled context backtracking with checkpoints and handoffs for Pi",
   "type": "module",
+  "files": ["src", "dist", "README.md", "README.zh-CN.md", "docs/public-extension.md"],
   "pi": {
     "extensions": [
       "./src/index.ts"
@@ -21,9 +22,9 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc -p tsconfig.build.json",
-    "test": "npm run build && node --test test/*.test.mjs && npm run test:native",
-    "test:native": "node scripts/test-native.mjs"
+    "build": "node -e \"require('node:fs').rmSync('dist', {recursive:true, force:true})\" && tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.85.1",

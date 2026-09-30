@@ -4,8 +4,7 @@ import { SessionManager } from '@earendil-works/pi-coding-agent';
 import extension from '../dist/index.js';
 import { LEGACY_STATE } from '../dist/contracts.js';
 
-// Commit failure / mixed batch / steering coverage uses the real native host in
-// native-failure.integration.mjs, not a simulated legacy turn_end transaction.
+// Public-host mixed batches, continuation and steering live in public-runtime.test.mjs.
 function fixture() {
   const sm = SessionManager.inMemory('/');
   const hooks = new Map(), notices = [];
@@ -35,18 +34,16 @@ test('legacy context fails closed instead of revealing hidden raw history', () =
   assert.deepEqual(f.sm.getBranch(), before);
 });
 
-test('legacy compaction is cancelled without changing its preparation or adding messages', () => {
+test('legacy compaction is cancelled without changing its preparation or adding messages', async () => {
   const f = fixture(), before = structuredClone(f.sm.getBranch());
   const event = { preparation: { fixture: true } };
-  assert.deepEqual(f.hooks.get('session_before_compact')(event, f.ctx), { cancel: true });
+  assert.deepEqual(await f.hooks.get('session_before_compact')(event, f.ctx), { cancel: true });
   assert.deepEqual(event, { preparation: { fixture: true } });
   assert.deepEqual(f.sm.getBranch(), before);
 });
 
-test('legacy tool execution never submits a native fold', async () => {
-  const f = fixture();
-  let submitted = false;
-  f.ctx.requestBacktrack = () => { submitted = true; };
+test('legacy tool execution never registers a policy or changes history', async () => {
+  const f = fixture(), before = structuredClone(f.sm.getEntries());
   await assert.rejects(f.tool.execute('call', { checkpoint: 0, message: 'Continue' }, undefined, undefined, f.ctx), /Legacy backtrack view/);
-  assert.equal(submitted, false);
+  assert.deepEqual(f.sm.getEntries(), before);
 });

@@ -1,8 +1,8 @@
 import type { ExtensionContext, SessionEntry, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { keyHint } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
-import { STATE, type BacktrackState, type BacktrackDetails, type BacktrackUsage } from "./contracts.js";
-import type { NativeEntry } from "./native.js";
+import { POLICY, type BacktrackPolicy, type StoredState, type BacktrackDetails, type BacktrackUsage } from "./contracts.js";
+import { isStateEntry } from "./state.js";
 import { formatCount } from "./tokens.js";
 
 // Labels are display-only. Never change the stored handoff or model context.
@@ -39,18 +39,18 @@ interface Display {
   error?: string;
 }
 
-/** Presentation follows committed native entries, not provisional tool results. */
+/** Presentation follows persisted policy registrations, not sibling-tool outcomes. */
 export class BacktrackRenderer {
   private records = new Map<string, Display>();
   private redraw = new Map<string, () => void>();
   refresh(ctx: ExtensionContext): void {
     const transactions = new Map<string, Display>();
-    for (const entry of ctx.sessionManager.getBranch() as NativeEntry[]) {
-      if (entry.type === "backtrack") {
-        const request = entry.details as BacktrackDetails | undefined;
+    for (const entry of ctx.sessionManager.getBranch()) {
+      if (entry.type === "custom" && entry.customType === POLICY) {
+        const request = (entry.data as BacktrackPolicy | undefined)?.details;
         if (request?.kind === "backtrack:v2") transactions.set(entry.id, { request, applied: true });
-      } else if (entry.type === "custom" && entry.customType === STATE) {
-        const state = entry.data as BacktrackState;
+      } else if (entry.type === "custom" && isStateEntry(entry)) {
+        const state = entry.data as StoredState;
         const record = state.lastTransaction && transactions.get(state.lastTransaction);
         if (record && state.usage) record.usage = state.usage;
       }
@@ -99,7 +99,7 @@ export class BacktrackRenderer {
     if (error) text = theme.fg("error", clean(error));
     else if (record?.usage) {
       const { before, after, window } = record.usage;
-      text = theme.fg("muted", `context ${formatCount(before)} → ${formatCount(after)}${window ? ` / ${formatCount(window)} (${Math.round(after / window * 100)}%)` : ""} · estimated`);
+      text = theme.fg("muted", `context ${before === null ? "unknown" : formatCount(before)} → ${after === null ? "unknown" : `${record.usage.afterEstimated ? "~" : ""}${formatCount(after)}`}${window ? ` / ${formatCount(window)}${after === null ? "" : ` (${Math.round(after / window * 100)}%)`}` : ""} · estimated`);
     } else text = theme.fg("muted", record?.applied || (result.details as { status?: string } | undefined)?.status === "applied" ? "Applied; context usage unavailable." : "Waiting for tool batch.");
     return new Text(`\n${text}`, 0, 0);
   };

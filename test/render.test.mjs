@@ -4,14 +4,15 @@ import { stripVTControlCharacters } from 'node:util';
 import { initTheme, ToolExecutionComponent } from '@earendil-works/pi-coding-agent';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { BacktrackRenderer, boundaryLocation } from '../dist/render.js';
-import { STATE } from '../dist/contracts.js';
+import { STATE, POLICY } from '../dist/contracts.js';
 
 initTheme('dark', false);
 const theme = { fg: (_color, text) => text, bold: text => text };
 const context = (args, expanded = false) => ({ args, toolCallId: 'bt', expanded, invalidate() {}, isError: false });
 const output = (component, width = 100) => component.render(width).map(line => stripVTControlCharacters(line).trimEnd()).join('\n');
 const message = (id, role, content, extra = {}) => ({ id, type: 'message', message: { role, content, ...extra } });
-const transaction = (location = []) => ({ id: 'tx', type: 'backtrack', details: { kind: 'backtrack:v2', callId: 'bt', target: 3, location } });
+const transaction = (location = []) => ({ id: 'tx', type: 'custom', customType: POLICY,
+  data: { details: { kind: 'backtrack:v2', callId: 'bt', target: 3, location } } });
 const usage = { before: 80900, after: 18200, window: 272000 };
 const metadata = () => ({ type: 'custom', customType: STATE, data: { lastTransaction: 'tx', usage } });
 const manager = entries => ({ sessionManager: { getBranch: () => entries } });
@@ -29,7 +30,7 @@ test('boundary labels identify user, context start, compaction and the whole too
   assert.deepEqual(boundaryLocation(branch, 'missing', 3), []);
 });
 
-test('native call preview, expansion, retained tail, partial arguments and narrow terminals', () => {
+test('policy call preview, expansion, retained tail, partial arguments and narrow terminals', () => {
   const renderer = new BacktrackRenderer();
   const args = { checkpoint: 3, keep_after_checkpoint: 5, message: Array.from({ length: 14 }, (_, i) => `交接 ${i}`).join('\n') };
   renderer.refresh(manager([transaction(['read a', 'bash npm test', 'write b'])]));
@@ -59,7 +60,7 @@ test('message preview preserves short handoffs and folds only the middle above t
   }
 });
 
-test('native transaction display restores usage without mutating entries; errors override success', () => {
+test('policy registration display restores usage without mutating entries; errors override success', () => {
   for (const measured of [false, true]) {
     const entries = [transaction(), ...(measured ? [metadata()] : [])], before = JSON.stringify(entries);
     const renderer = new BacktrackRenderer(); renderer.refresh(manager(entries));
@@ -70,7 +71,24 @@ test('native transaction display restores usage without mutating entries; errors
   }
 });
 
-test('real tool row redraws on native commit, restores records and isolates detached UI errors', () => {
+test('local post-fold estimates are explicitly marked', () => {
+  const state = metadata(); state.data.usage = { ...usage, afterEstimated: true };
+  const renderer = new BacktrackRenderer(); renderer.refresh(manager([transaction(), state]));
+  assert.match(output(renderer.renderResult({ content: [] }, {}, theme, context({}))), /80.9K → ~18.2K \/ 272K/);
+});
+
+test('unknown context usage is not rendered as zero or a fabricated percentage', () => {
+  for (const before of [null, 80900]) {
+    const state = metadata();
+    state.data.usage = { before, after: null, window: 272000 };
+    const renderer = new BacktrackRenderer(); renderer.refresh(manager([transaction(), state]));
+    const rendered = output(renderer.renderResult({ content: [] }, {}, theme, context({})));
+    assert.ok(rendered.includes(`context ${before === null ? 'unknown' : '80.9K'} → unknown / 272K`));
+    assert.doesNotMatch(rendered, /NaN|\(0%\)/);
+  }
+});
+
+test('real tool row redraws on policy registration, restores records and isolates detached UI errors', () => {
   const entries = [], renderer = new BacktrackRenderer();
   const args = { checkpoint: 3, message: 'Continue.' };
   let renders = 0;

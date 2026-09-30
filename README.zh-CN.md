@@ -24,7 +24,7 @@
 在 user input 和完整 tool result 批次后注入 checkpoint 与上下文用量：
 
 ```text
-[checkpoint 3 | context 48K/200K 24%]
+backtrack-checkpoint 3 context 48K/200K 24%
 ```
 
 Agent 感知上下文容量，根据当前任务自主回退到某个 checkpoint，完整保留此前的有效上下文以便复用 KV Cache，携带探索中积累的知识继续工作。
@@ -40,19 +40,19 @@ backtrack({
 
 ## 安装
 
-开发基于 Pi SDK 0.85.1 和 Node.js 22.17.0。
+使用未修改的 Pi 0.85.1 和 Node.js ≥22.19.0。见[运行与迁移说明](docs/public-extension.md)。
 
 ```sh
-pi install git:github.com/wjfjfm/pi-backtrack
+pi install git:github.com/wjfjfm/pi-backtrack@refactor/public-extension
 ```
 
-执行 `/reload` 或启动新会话。
+执行 `/reload` 或启动新会话。从修改版宿主迁移时必须新建会话，不自动转换旧的 native-backtrack 会话。
 
 <details>
 <summary>本地运行</summary>
 
 ```sh
-git clone https://github.com/wjfjfm/pi-backtrack.git
+git clone --branch refactor/public-extension https://github.com/wjfjfm/pi-backtrack.git
 cd pi-backtrack
 npm ci
 pi -e ./src/index.ts

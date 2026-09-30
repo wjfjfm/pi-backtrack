@@ -1,6 +1,4 @@
-import type { ContextMessage } from "./context.js";
-
-/** Deliberately model-independent; all values are estimates, never provider usage. */
+/** Model-independent history clipping budget, not the host's context usage meter. */
 export const TOKEN_WEIGHTS = Object.freeze({ cjk: 1.5, latinOrSpace: 0.25, symbol: 1, image: 1365 });
 const segmenter = new Intl.Segmenter("und", { granularity: "grapheme" });
 export function graphemes(text: string): string[] { return Array.from(segmenter.segment(text), (part) => part.segment); }
@@ -26,15 +24,4 @@ export function excerpt(text: string, edge: number): string {
   while (right > left && used + weight(parts[right - 1]!) <= edge) used += weight(parts[--right]!);
   if (left === right) return text;
   return parts.slice(0, left).join("") + `[${formatCount(estimateText(parts.slice(left, right).join("")))} tokens omitted]` + parts.slice(right).join("");
-}
-export function estimateMessages(messages: readonly ContextMessage[], systemPrompt = "", toolSchemas = ""): number {
-  return estimateText(systemPrompt) + estimateText(toolSchemas) + messages.reduce((sum, message) => {
-    if (message.role === "bashExecution" && message.excludeFromContext) return sum;
-    if ("content" in message) {
-      if (typeof message.content === "string") return sum + 4 + estimateText(message.content);
-      return sum + 4 + message.content.reduce((n, part) => n + (part.type === "image" ? TOKEN_WEIGHTS.image
-        : part.type === "text" ? estimateText(part.text) : estimateText(JSON.stringify(part))), 0);
-    }
-    return sum + estimateText(JSON.stringify(message));
-  }, 0);
 }

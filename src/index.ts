@@ -2,8 +2,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { backtrackParameters, validateArguments } from "./schema.js";
 import { backtrackDescription } from "./tool-description.js";
 import { BacktrackEngine } from "./engine.js";
+import { compactEffective } from "./compaction.js";
 import { BacktrackRenderer } from "./render.js";
-import { onBacktrack, requestBacktrack } from "./native.js";
 
 export default function registerBacktrack(pi: ExtensionAPI): void {
   const engine = new BacktrackEngine(pi);
@@ -20,12 +20,14 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
   });
   pi.on("session_tree", (_event, ctx) => renderer.refresh(ctx));
   pi.on("session_compact", (_event, ctx) => renderer.refresh(ctx));
-  // Native compaction owns preparation. The only guard is refusing unsafe legacy input.
-  pi.on("session_before_compact", (_event, ctx) => {
-    try { engine.assertCompatible(ctx); }
+  pi.on("session_before_compact", async (event, ctx) => {
+    try { return await compactEffective(pi, engine, event, ctx); }
     catch (error) { warn(ctx, error); return { cancel: true }; }
   });
-  onBacktrack(pi, (_event, ctx) => renderer.refresh(ctx));
+  pi.on("turn_end", (_event, ctx) => {
+    try { engine.sync(ctx); renderer.refresh(ctx); }
+    catch (error) { ctx.abort(); warn(ctx, error); }
+  });
   pi.on("context", (event, ctx) => {
     try {
       const messages = engine.project(ctx, event.messages);
@@ -38,7 +40,7 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
     }
   });
   const tool = {
-    name: "backtrack", label: "Backtrack", supportsBacktrack: true,
+    name: "backtrack", label: "Backtrack",
     description: backtrackDescription,
     parameters: backtrackParameters,
     renderCall: renderer.renderCall,
@@ -46,8 +48,8 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
     async execute(callId: string, args: unknown, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
       validateArguments(args);
       if (signal?.aborted) throw new Error("Backtrack cancelled.");
-      requestBacktrack(ctx, callId, engine.prepare(ctx, callId, args));
-      // The host publishes this result only after committing; failure replaces it in place.
+      engine.register(ctx, callId, args);
+      // Success means the independent policy is registered, not that sibling tools succeeded.
       const text = args.keep_after_checkpoint === undefined ? "Backtrack applied."
         : `Backtrack to checkpoint ${args.checkpoint} succeeded. No separate handoff message was injected because raw context after checkpoint ${args.keep_after_checkpoint} is preserved. Refer to this tool call’s message argument.`;
       return { content: [{ type: "text" as const, text }], details: { status: "applied" } };

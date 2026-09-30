@@ -24,7 +24,7 @@ Agent-controlled context backtracking for recursive thinking and exploration.
 Injects a checkpoint and context usage after each user input and complete tool-result batch:
 
 ```text
-[checkpoint 3 | context 48K/200K 24%]
+backtrack-checkpoint 3 context 48K/200K 24%
 ```
 
 The agent monitors context usage and chooses a checkpoint to return to based on the current task. It preserves the preceding effective context intact for KV cache reuse, carrying knowledge gained during exploration into the work ahead.
@@ -40,19 +40,19 @@ backtrack({
 
 ## Install
 
-Developed with Pi SDK 0.85.1 and Node.js 22.17.0.
+Uses unmodified Pi 0.85.1 and Node.js ≥22.19.0. See [runtime and migration](docs/public-extension.md).
 
 ```sh
-pi install git:github.com/wjfjfm/pi-backtrack
+pi install git:github.com/wjfjfm/pi-backtrack@refactor/public-extension
 ```
 
-Run `/reload` or start a new session.
+Run `/reload` or start a new session. Migrating from the modified host requires a new session; old native-backtrack sessions are not converted.
 
 <details>
 <summary>Run locally</summary>
 
 ```sh
-git clone https://github.com/wjfjfm/pi-backtrack.git
+git clone --branch refactor/public-extension https://github.com/wjfjfm/pi-backtrack.git
 cd pi-backtrack
 npm ci
 pi -e ./src/index.ts
