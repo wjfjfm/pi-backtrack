@@ -36,18 +36,18 @@ test('checkpoint bodies grow linearly; cursor-only revisions store no checkpoint
  assert.ok(sizes[1]<sizes[0]*2.2);
 });
 
-test('legacy full snapshot can seed deltas without mutating its markers or usage',()=>{
+test('obsolete full snapshots are rejected rather than silently migrated',()=>{
  const f=fixture();f.user('one');const old=latestState(f.ctx);
- const id=f.sm.appendCustomEntry(SNAPSHOT_STATE,structuredClone(old));
- f.user('two');
- assert.equal(f.sm.getLeafEntry().data.parent,id);
- const restored=latestState(f.ctx);
- assert.deepEqual(restored.checkpoints.slice(0,old.checkpoints.length),old.checkpoints);
- assert.deepEqual(f.sm.getEntry(id).data,old);
- const saved=storeState(restored,{id,state:old});
- assert.deepEqual(restoreStates([old,saved]),restored);
- restored.checkpoints[0].marker.content='mutated caller';
+ f.sm.appendCustomEntry(SNAPSHOT_STATE,structuredClone(old));
+ assert.throws(()=>f.engine.sync(f.ctx),/unsupported/);
+ assert.throws(()=>restoreStates([old]),/unsupported/);
+});
+test('delta restoration does not mutate persisted markers',()=>{
+ const f=fixture();f.user('one');const state=latestState(f.ctx);
+ state.checkpoints[0].marker.content='mutated caller';
  assert.notEqual(latestState(f.ctx).checkpoints[0].marker.content,'mutated caller');
+ const saved=storeState(state);
+ assert.deepEqual(restoreStates([saved]),state);
 });
 
 test('completed policy recovers before settlement, while incomplete policy is ignored',()=>{
@@ -75,16 +75,14 @@ test('state revisions name their actual base, not an intervening incomplete poli
  assert.deepEqual(latestState(f.ctx),observation,'completion must not retroactively rebase an already saved revision');
 });
 
-test('legacy policy full state remains recoverable and later writes are incremental',()=>{
+test('obsolete policy snapshots fail closed on recovery',()=>{
  const f=fixture();f.user('one');f.user('two');const before=latestState(f.ctx);
  const policy=register(f);
- const full=restoreStates([before,policy.data.details.state]);
+ const full=restoreStates([storeState(before),policy.data.details.state]);
  f.sm.branch(policy.parentId);
- const legacyId=f.sm.appendCustomEntry(POLICY,{...policy.data,details:{...policy.data.details,state:full}});
- finish(f.sm);f.engine.sync(f.ctx);
- assert.equal(latestState(f.ctx).lastTransaction,legacyId);
- assert.equal(f.sm.getLeafEntry().data.version,3);
- assert.equal(f.sm.getLeafEntry().data.parent,legacyId);
+ f.sm.appendCustomEntry(POLICY,{...policy.data,details:{...policy.data.details,state:full}});
+ finish(f.sm);
+ assert.throws(()=>f.engine.sync(f.ctx),/unsupported/);
 });
 
 test('a delta cannot borrow a base from another branch or before compaction',()=>{

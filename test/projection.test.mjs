@@ -8,13 +8,13 @@ import {SessionManager} from '@earendil-works/pi-coding-agent';
 import {applyFolds,bindSources,sourceNodes} from '../dist/projection.js';
 const TYPE='probe:policy';
 const key=m=>JSON.stringify(m.role==='custom'?{role:m.role,customType:m.customType,content:m.content,display:m.display,details:m.details}:m);
-const source=sm=>sourceNodes(sm.buildContextEntries());
+const source=sm=>sourceNodes(sm.buildSessionProjection().entries);
 function project(sm,input=source(sm).map(n=>n.message)) {
  const branch=sm.getBranch();
  const operations=branch.filter(e=>e.type==='custom'&&e.customType===TYPE).map(entry=>({id:entry.id,policy:{
   ...entry.data,messages:[{role:'custom',customType:'probe:replacement',content:entry.data.replacement,display:false,timestamp:1}],
  }}));
- return applyFolds(branch,bindSources(sm.buildContextEntries(),input),operations);
+ return applyFolds(branch,bindSources(sm.buildSessionProjection().entries,input),operations);
 }
 const user=(sm,text)=>sm.appendMessage({role:'user',content:text,timestamp:1});
 function toolRound(sm,id,text='DUPLICATE_BODY') {

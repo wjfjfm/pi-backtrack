@@ -41,6 +41,8 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
   });
   const tool = {
     name: "backtrack", label: "Backtrack",
+    // A backtrack owns a transcript boundary; nested calls have no transcript entry.
+    exposure: "model-only" as const,
     description: backtrackDescription,
     parameters: backtrackParameters,
     renderCall: renderer.renderCall,

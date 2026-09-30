@@ -1,4 +1,4 @@
-import { sessionEntryToContextMessages, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ProjectedSessionEntry, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { messageKey, type ContextMessage } from "./context.js";
 
 /** A policy is an independent tool side effect, not a transaction over sibling tools. */
@@ -12,12 +12,14 @@ export interface FoldOperation { id: string; policy: FoldPolicy }
 export interface SourceNode { id: string | null; message: ContextMessage }
 
 /** Ephemeral provenance. No full view or message bodies are persisted here. */
-export function sourceNodes(entries: readonly SessionEntry[]): SourceNode[] {
-  return entries.flatMap(entry => sessionEntryToContextMessages(entry).map(message => ({ id: entry.id, message })));
+export function sourceNodes(entries: readonly ProjectedSessionEntry[]): SourceNode[] {
+  // Pi owns system/tool loadout replay and native context edits. Neither is a foldable conversation entry.
+  return entries.flatMap(entry => entry.messages.filter(message => message.role !== "system")
+    .map(message => ({ id: entry.sourceEntry.id, message })));
 }
 
 /** Associate cloned request messages by occurrence, not by content-set membership. */
-export function bindSources(entries: readonly SessionEntry[], messages: readonly ContextMessage[]): SourceNode[] {
+export function bindSources(entries: readonly ProjectedSessionEntry[], messages: readonly ContextMessage[]): SourceNode[] {
   const queues = new Map<string, SourceNode[]>();
   for (const node of sourceNodes(entries)) {
     const key = messageKey(node.message);

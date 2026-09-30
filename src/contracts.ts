@@ -27,13 +27,13 @@ export interface BacktrackState {
   lastTransaction?: string;
   usage?: BacktrackUsage;
 }
-export type StoredState = BacktrackState | (Omit<BacktrackState, "version" | "checkpoints"> & {
+export type StoredState = Omit<BacktrackState, "version" | "checkpoints"> & {
   version: 3;
   /** Exact previous state revision on this branch; null starts a self-contained state. */
   parent: string | null;
   checkpoints: Checkpoint[];
   removed: number[];
-});
+};
 export interface BacktrackUsage { before: number | null; after: number | null; afterEstimated?: boolean; window?: number }
 export interface BacktrackDetails {
   kind: "backtrack:v2";

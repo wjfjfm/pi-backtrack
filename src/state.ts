@@ -23,17 +23,14 @@ export function restoreStates(records: readonly StoredState[]): BacktrackState |
   let previous: StoredState | undefined;
   for (const saved of records) {
     if (!Array.isArray(saved.checkpoints)) throw new Error("Corrupt backtrack checkpoint state.");
-    if (saved.version === 2) points.clear();
-    else {
-      if (saved.version !== 3 || !Array.isArray(saved.removed) || (saved.parent !== null && typeof saved.parent !== "string")) {
-        throw new Error("Corrupt backtrack checkpoint delta.");
-      }
-      if (saved.parent === null) points.clear();
-      else if (!previous || previous.epoch !== saved.epoch || previous.base !== saved.base) {
-        throw new Error("Missing backtrack checkpoint delta base.");
-      }
-      for (const id of saved.removed) points.delete(id);
+    if (saved.version !== 3 || !Array.isArray(saved.removed) || (saved.parent !== null && typeof saved.parent !== "string")) {
+      throw new Error("Corrupt or unsupported backtrack checkpoint delta; restore with the previous release or start a new session.");
     }
+    if (saved.parent === null) points.clear();
+    else if (!previous || previous.epoch !== saved.epoch || previous.base !== saved.base) {
+      throw new Error("Missing backtrack checkpoint delta base.");
+    }
+    for (const id of saved.removed) points.delete(id);
     for (const point of saved.checkpoints) points.set(point.id, point);
     previous = saved;
   }

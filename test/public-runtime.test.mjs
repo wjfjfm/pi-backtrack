@@ -10,7 +10,7 @@ import {latestState} from '../dist/engine.js';
 const model={id:'public-test',name:'public-test',api:'openai-completions',provider:'public-test',baseUrl:'http://unused.invalid',reasoning:false,input:['text','image'],contextWindow:100000,maxTokens:2000,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}};
 const call=(name,id,args={})=>({type:'toolCall',name,id,arguments:args});
 const text=text=>({type:'text',text});
-async function fixture(t,respond,mode='parallel',summary,extensions=[],reverseExtensions=false) {
+async function fixture(t,respond,mode='parallel',summary,extensions=[],reverseExtensions=false,configure=()=>{}) {
  const cwd=await mkdtemp(join(tmpdir(),'public-backtrack-')),previous=process.env.PI_CODING_AGENT_DIR;
  process.env.PI_CODING_AGENT_DIR=join(cwd,'agent');
  t.after(async()=>{if(previous===undefined)delete process.env.PI_CODING_AGENT_DIR;else process.env.PI_CODING_AGENT_DIR=previous;await rm(cwd,{recursive:true,force:true});});
@@ -27,6 +27,7 @@ async function fixture(t,respond,mode='parallel',summary,extensions=[],reverseEx
     usage:{input:300,output:20,cacheRead:0,cacheWrite:0,totalTokens:320,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},stopReason:response.error?'error':'stop',timestamp:Date.now(),...(response.error?{errorMessage:response.error}:{})};
    const stream=createAssistantMessageEventStream();stream.push(response.error?{type:'error',reason:'error',error:message}:{type:'done',reason:'stop',message});stream.end();return stream;
   }});
+  configure(pi);
   for(const name of ['probe','fail'])pi.registerTool({name,label:name,description:name,executionMode:mode,parameters:{type:'object',properties:{value:{type:'string'}}},execute:async(_id,args)=>{
    if(name==='fail')throw new Error('SIBLING_FAILURE');
    return {content:[text((args.value??'SECRET_TOOL_BODY').repeat(summary?3000:1))]};
@@ -57,6 +58,63 @@ async function fixture(t,respond,mode='parallel',summary,extensions=[],reverseEx
   return session;
  }};
 }
+test('native context edits remain authoritative across folds and disk reopen',async t=>{
+ const host=await fixture(t,(n,context)=>{
+  if(n===1)return [call('probe','explore',{value:'ORIGINAL_BODY'})];
+  if(n===2)return [text('Explored')];
+  assert.ok(!JSON.stringify(context.messages.filter(message=>message.role==='toolResult')).includes('ORIGINAL_BODY'));
+  if(n===3){
+   assert.match(JSON.stringify(context.messages),/EDITED_BODY/);
+   return [call('backtrack','fold',{checkpoint:1,message:'EDITED_FINDING'})];
+  }
+  assert.ok(!JSON.stringify(context.messages).includes('EDITED_BODY'));
+  assert.match(JSON.stringify(context.messages),/EDITED_FINDING/);
+  assert.equal(context.messages[0].role,'system');
+  return [text('Done')];
+ });
+ await host.session.prompt('Explore');
+ const result=host.sm.getBranch().find(entry=>entry.type==='message'&&entry.message.role==='toolResult');
+ host.sm.appendContextEdit(result.id,{content:[text('EDITED_BODY')]});
+ await host.session.prompt('Fold');
+ const reopened=await host.reopen();await reopened.prompt('Continue');
+ assert.equal(host.requests.length,5);
+});
+
+for(const outerFails of [false,true])test(`nested skill reads survive outer failure=${outerFails} while backtrack stays model-only`, {skip:!process.env.PI_DYNAMIC_SKILL_EXTENSION},async t=>{
+ let skill;
+ const host=await fixture(t,(n,context)=>{
+  if(n===1)return [call('orchestrate','outer',{path:skill})];
+  if(n===2)return [call('backtrack','fold',{checkpoint:0,message:'NESTED_FINDING'})];
+  const visible=JSON.stringify(context.messages);
+  assert.ok(!visible.includes('NESTED_PRIVATE_BODY'));
+  assert.equal(visible.split('NESTED_PUBLIC_DESCRIPTION').length-1,1);
+  return [text('Done')];
+ },'parallel',undefined,[resolve(process.env.PI_DYNAMIC_SKILL_EXTENSION)],false,pi=>{
+  pi.registerTool({name:'orchestrate',label:'orchestrate',description:'Nested read',exposure:'model-only',
+   parameters:{type:'object',properties:{path:{type:'string'}},required:['path']},
+   async execute(_id,args,_signal,_update,ctx){
+    assert.ok(!ctx.tools.some(tool=>tool.name==='backtrack'));
+    const blocked=await ctx.executeTool('backtrack',{checkpoint:0});
+    assert.equal(blocked.isError,true);
+    const failed=await ctx.executeTool('read',{path:args.path+'.missing'});
+    assert.equal(failed.isError,true);
+    const result=await ctx.executeTool('read',{path:args.path});
+    assert.equal(result.isError,false);
+    if(outerFails)throw new Error('OUTER_FAILED_AFTER_SUCCESSFUL_READ');
+    return {content:result.result.content,details:undefined};
+   }});
+ });
+ const directory=join(host.cwd,'dynamic-skill','skills','dynamic-skill','skills','nested');
+ await mkdir(directory,{recursive:true});skill=join(directory,'SKILL.md');
+ await writeFile(skill,'---\nname: nested\ndescription: NESTED_PUBLIC_DESCRIPTION\n---\nNESTED_PRIVATE_BODY');
+ await host.session.prompt('Read through a nested tool');
+ const accesses=host.sm.getEntries().filter(entry=>entry.customType==='dynamic-skill:nested-access');
+ assert.equal(accesses.length,1);assert.equal(accesses[0].data.path,skill);
+ const reopened=await host.reopen();await reopened.prompt('Continue');
+ assert.equal(reopened.sessionManager.getEntries().filter(entry=>entry.customType==='dynamic-skill:nested-access').length,1);
+ assert.equal(host.requests.length,4);
+});
+
 const metered=(response,input,output=10)=>Object.assign(response,{usage:{input,output,cacheRead:0,cacheWrite:0,totalTokens:input+output,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}});
 for(const mode of ['stale','manual','overflow','fresh','large','zero-usage'])test(`post-fold threshold recheck preserves ${mode} behavior`,async t=>{
  const summaries=[];
@@ -242,7 +300,7 @@ for(const mode of ['sequential','parallel'])for(const siblingFailure of [false,t
 test('public host continues after folding and preserves its usage snapshot across reload',async t=>{
  const host=await fixture(t,(n,ctx)=>{
   if(n===1)return [text('Answer text.'),call('backtrack','fold',{checkpoint:0,message:'DONE'})];
-  assert.ok(!JSON.stringify(ctx.messages).includes('"name":"backtrack"'));
+  assert.ok(!ctx.messages.some(message=>message.role==='assistant'&&message.content.some(part=>part.type==='toolCall'&&part.name==='backtrack')));
   assert.ok(JSON.stringify(ctx.messages).includes('DONE'));return [text('Continue.')];
  });
  await host.session.prompt('Question');assert.equal(host.requests.length,2);
@@ -419,13 +477,15 @@ test('queued user input survives a registered fold and reaches the next request'
 
 test('intact folded user images survive until text-only compaction replaces their prefix',async t=>{
  const images=context=>context.messages.flatMap(message=>Array.isArray(message.content)?message.content:[]).filter(part=>part.type==='image');
- const image={type:'image',mimeType:'image/png',data:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aT1cAAAAASUVORK5CYII='};
+ const image={type:'image',mimeType:'image/png',data:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII='};
  const host=await fixture(t,(n,context)=>{
-  if(n===1)return [call('backtrack','fold',{checkpoint:0,message:'IMAGE_FINDING'})];
+  if(n===1){assert.deepEqual(images(context),[image],'host must deliver the original image before backtrack');return [call('backtrack','fold',{checkpoint:0,message:'IMAGE_FINDING'})];}
   assert.deepEqual(images(context),n===2?[image]:[]);
   return [text('Image finding '.repeat(1000))];
  },'parallel',context=>{assert.deepEqual(images(context),[]);return {text:'SUMMARY IMAGE_FINDING'};});
  await host.session.prompt('Inspect this image. '.repeat(100),{images:[image]});
+ assert.deepEqual(host.errors,[]);
+ assert.deepEqual(host.session.messages.filter(message=>message.role==='assistant'&&message.stopReason==='error').map(message=>message.errorMessage),[]);
  await host.session.compact();await host.session.prompt('Continue');
  assert.equal(host.requests.length,3);
 });

@@ -1,4 +1,3 @@
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { calculateContextTokens, compact, findCutPoint, prepareBranchEntries, shouldCompact, type ExtensionAPI, type ExtensionContext, type SessionEntry, type SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent";
 import { messageKey } from "./context.js";
 import { completeBatchEnd, sourceNodes, type SourceNode } from "./projection.js";
@@ -27,7 +26,7 @@ export async function compactEffective(
   const folds = operations(ctx);
   if (!folds.length) return;
   if (!ctx.model) throw new Error("No model selected for compaction.");
-  const nodes = engine.nodes(ctx), raw = sourceNodes(ctx.sessionManager.buildContextEntries());
+  const nodes = engine.nodes(ctx), raw = sourceNodes(ctx.sessionManager.buildSessionProjection().entries);
   const settings = event.preparation.settings;
   if (event.reason === "threshold" && ctx.model.contextWindow > 0) {
     const branch = ctx.sessionManager.getBranch();
@@ -58,31 +57,15 @@ export async function compactEffective(
     for (const path of details?.readFiles ?? []) fileOps.read.add(path);
     for (const path of details?.modifiedFiles ?? []) fileOps.edited.add(path);
   }
-  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-  if (!auth.ok) throw new Error(auth.error);
-  const requestModel = auth.baseUrl ? { ...ctx.model, baseUrl: auth.baseUrl } : ctx.model;
-  // Adapt the public registry completion API, retaining Pi's public summary generator.
-  const stream: NonNullable<Parameters<typeof compact>[7]> = (model, context, options) => {
-    const events = createAssistantMessageEventStream();
-    void ctx.modelRegistry.complete(model, context, { ...options, ...(auth.headers ? { headers: auth.headers } : {}) }).then(message => {
-      if (message.stopReason === "error" || message.stopReason === "aborted") events.push({ type: "error", reason: message.stopReason, error: message });
-      else if (message.stopReason === "pending") throw new Error("Summary response is incomplete.");
-      else events.push({ type: "done", reason: message.stopReason, message });
-      events.end();
-    }).catch(error => {
-      events.push({ type: "error", reason: "error", error: { role: "assistant", content: [], api: model.api, provider: model.provider,
-        model: model.id, stopReason: "error", errorMessage: String(error), timestamp: Date.now(),
-        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } });
-      events.end();
-    });
-    return events;
-  };
+  // ModelRuntime owns routing, credentials, headers and provider streams, including virtual models.
+  const stream: NonNullable<Parameters<typeof compact>[7]> = (model, context, options) =>
+    ctx.modelRegistry.streamSimple(model, context, options);
   const result = await compact({ settings, tokensBefore: prepareBranchEntries(entries).totalTokens,
     firstKeptEntryId: nodes[cut]?.id ?? "pending-boundary",
     messagesToSummarize: nodes.slice(0, historyEnd).map(node => node.message),
     turnPrefixMessages: split ? nodes.slice(historyEnd, cut).map(node => node.message) : [],
     isSplitTurn: split, fileOps,
-  }, requestModel, auth.apiKey, undefined, event.customInstructions, event.signal, ctx.thinkingLevel, stream, auth.env);
+  }, ctx.model, undefined, undefined, event.customInstructions, event.signal, ctx.thinkingLevel, stream);
   if (event.signal.aborted) throw new Error("Compaction cancelled");
   if (cut === nodes.length) {
     // Public compaction requires an existing firstKeptEntryId even for an empty raw tail.

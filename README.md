@@ -40,7 +40,7 @@ backtrack({
 
 ## Install
 
-Uses unmodified Pi 0.85.1 and Node.js ≥22.19.0. See [runtime and migration](docs/public-extension.md).
+Uses unmodified Pi 0.99.1 and Node.js ≥22.19.0. See [runtime and migration](docs/public-extension.md).
 
 ```sh
 pi install git:github.com/wjfjfm/pi-backtrack

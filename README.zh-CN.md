@@ -40,7 +40,7 @@ backtrack({
 
 ## 安装
 
-使用未修改的 Pi 0.85.1 和 Node.js ≥22.19.0。见[运行与迁移说明](docs/public-extension.md)。
+使用未修改的 Pi 0.99.1 和 Node.js ≥22.19.0。见[运行与迁移说明](docs/public-extension.md)。
 
 ```sh
 pi install git:github.com/wjfjfm/pi-backtrack

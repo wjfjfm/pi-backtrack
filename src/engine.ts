@@ -68,7 +68,7 @@ export class BacktrackEngine {
   }
   nodes(ctx: ExtensionContext, input?: ContextMessage[]): SourceNode[] {
     this.assertCompatible(ctx);
-    const entries = ctx.sessionManager.buildContextEntries();
+    const entries = ctx.sessionManager.buildSessionProjection().entries;
     return applyFolds(branchOf(ctx), input ? bindSources(entries, input) : sourceNodes(entries), operations(ctx));
   }
   private usage(ctx: ExtensionContext) {
