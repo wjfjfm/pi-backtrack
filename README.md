@@ -38,8 +38,6 @@ backtrack({
 
 `checkpoint` selects the return point. `message` records work done, material examined, findings, failed attempts and lessons, and next steps.
 
-Ordinary `backtrack({ checkpoint: 0, message: "…" })` resets Pi's native working-context baseline after the complete tool batch, without a summarization model call. Only the current interval's trimmed dialogue (including retained images) and handoff survive; earlier baselines and handoffs are not inherited. Carry forward what still matters. Original history remains archived. Nonzero and retained-tail backtracks keep their existing behavior.
-
 ## Install
 
 Uses unmodified Pi 0.99.1 and Node.js ≥22.19.0. See [runtime and migration](docs/public-extension.md).
@@ -47,10 +45,6 @@ Uses unmodified Pi 0.99.1 and Node.js ≥22.19.0. See [runtime and migration](do
 ```sh
 pi install git:github.com/wjfjfm/pi-backtrack
 ```
-
-Run `/reload` or start a new session. Migrating from the modified host requires a new session; old native-backtrack sessions are not converted.
-
-When combined with [pi-dynamic-skill](https://github.com/wjfjfm/pi-dynamic-skill), load backtrack first so skill retention sees the folded context, not raw history.
 
 <details>
 <summary>Run locally</summary>
