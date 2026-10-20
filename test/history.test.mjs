@@ -8,6 +8,17 @@ import { backtrackDescription } from '../dist/tool-description.js';
 const plain = (message) => message.content.filter((part) => part.type === 'text').map((part) => part.text).join('');
 const row = (id, role, text, turn = id, images = []) => ({ id, role, text, turn, images });
 
+test('folded dialogue preserves original text/image order', () => {
+  const image = { type: 'image', data: 'IMAGE', mimeType: 'image/png' };
+  const last = { ...row('u2', 'user', 'before\nafter', 'u2', [image]),
+    content: [{ type: 'text', text: 'before' }, image, { type: 'text', text: 'after' }] };
+  const messages = [row('u1', 'user', 'old request'), last, row('a2', 'assistant', 'working', 'u2')];
+  const original = renderHistory(messages).content;
+  assert.deepEqual(original.slice(2, 5), last.content);
+  assert.match(plain({ content: original }), /old request/);
+  assert.match(plain({ content: original }), /working/);
+});
+
 test('strict arguments reject old schemas, unsafe IDs, fractions and non-string continuation', () => {
   for (const args of [null, {}, { checkpoint: -1, message: 'x' }, { checkpoint: 0.5, message: 'x' },
     { checkpoint: Number.MAX_SAFE_INTEGER + 1, message: 'x' }, { checkpoint: 0, message: 1 },

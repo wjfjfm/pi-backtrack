@@ -60,7 +60,7 @@ test('completed policy recovers before settlement, while incomplete policy is ig
  finish(f.sm);
  const committed=latestState(f.ctx);
  assert.deepEqual(committed.checkpoints.map(p=>p.id),[0,1]);
- assert.equal(committed.cursor,policy.id);
+ assert.equal(committed.cursor,policy.data.anchorId);
  new BacktrackEngine(f.pi).sync(f.ctx);
  const view=JSON.stringify(f.engine.project(f.ctx,f.sm.buildContextEntries().flatMap(sessionEntryToContextMessages)));
  assert.match(view,/FINDING/);

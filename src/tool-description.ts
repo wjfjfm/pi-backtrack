@@ -1,4 +1,6 @@
-export const backtrackDescription = `By default, backtrack automatically preserves all context through the selected checkpoint, removes subsequent thinking, tool calls, and tool results, and retains only basic user/assistant dialogue with appropriate trimming.
+export const backtrackDescription = `By default, backtrack automatically preserves all context through the selected checkpoint, removes subsequent exploration, and retains trimmed user/assistant dialogue in the backtrack tool result. This backtrack call and its result remain in context; the call's message argument is the handoff.
+
+Backtrack is an intermediate operation. Continue the unfinished user task afterward, rather than ending with an acknowledgement of backtrack or context restoration.
 
 Without keep_after_checkpoint, checkpoint 0 establishes a new native context baseline. It keeps only this interval’s trimmed dialogue and your handoff, not earlier baselines or handoffs. Carry forward everything still needed. Original session history remains archived.
 

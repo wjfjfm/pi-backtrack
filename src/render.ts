@@ -1,4 +1,4 @@
-import type { ExtensionContext, SessionEntry, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, MessageRenderer, SessionEntry, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { keyHint } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { POLICY, type BacktrackPolicy, type StoredState, type BacktrackDetails, type BacktrackUsage } from "./contracts.js";
@@ -38,6 +38,23 @@ interface Display {
   applied?: boolean;
   error?: string;
 }
+
+/** Visible native-reset payload; presentation never changes the retained context. */
+export const renderBaseline: MessageRenderer<{ usage?: BacktrackUsage; handoff?: string }> = (message, { expanded }, theme) => {
+  const usage = message.details?.usage;
+  const count = (value: number | null | undefined) => value == null ? "unknown" : formatCount(value);
+  let text = theme.fg("toolTitle", theme.bold("backtrack · checkpoint 0"));
+  text += "\n" + theme.fg("muted", `context ${count(usage?.before)} → ${usage?.after != null ? "~" : ""}${count(usage?.after)} tokens · estimated`);
+  const full = typeof message.content === "string" ? message.content
+    : message.content.map(part => part.type === "text" ? part.text : "[retained image]").join("\n");
+  if (expanded) text += "\n\n" + theme.fg("toolOutput", clean(full));
+  else {
+    const handoff = message.details?.handoff?.replace(/^\[Backtrack message — agent handoff\]\n?/, "").trim();
+    text += "\n" + theme.fg("toolOutput", handoff ? short(handoff) : "Retained dialogue; no handoff provided.");
+    text += "\n" + theme.fg("muted", keyHint("app.tools.expand", "to expand retained dialogue and full handoff"));
+  }
+  return new Text(text, 0, 0);
+};
 
 /** Presentation follows persisted policy registrations, not sibling-tool outcomes. */
 export class BacktrackRenderer {
@@ -92,7 +109,7 @@ export class BacktrackRenderer {
     return new Text(title, 0, 0);
   };
 
-  renderResult: NonNullable<ToolDefinition["renderResult"]> = (result, _options, theme, context) => {
+  renderResult: NonNullable<ToolDefinition["renderResult"]> = (result, options, theme, context) => {
     const record = this.records.get(context.toolCallId);
     const error = context.isError ? result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n") || "Backtrack failed." : record?.error;
     let text: string;
@@ -101,6 +118,13 @@ export class BacktrackRenderer {
       const { before, after, window } = record.usage;
       text = theme.fg("muted", `context ${before === null ? "unknown" : formatCount(before)} → ${after === null ? "unknown" : `${record.usage.afterEstimated ? "~" : ""}${formatCount(after)}`}${window ? ` / ${formatCount(window)}${after === null ? "" : ` (${Math.round(after / window * 100)}%)`}` : ""} · estimated`);
     } else text = theme.fg("muted", record?.applied || (result.details as { status?: string } | undefined)?.status === "applied" ? "Applied; context usage unavailable." : "Waiting for tool batch.");
+    if (!error) {
+      const body = result.content.map(part => part.type === "text" ? part.text : "[retained image]").join("");
+      if (body) text += "\n" + theme.fg("toolOutput", options.expanded ? clean(body) : short(body.split("\n")[0]!));
+      if (!options.expanded && body.includes("[Folded conversation]")) {
+        text += "\n" + theme.fg("muted", keyHint("app.tools.expand", "to expand folded conversation"));
+      }
+    }
     return new Text(`\n${text}`, 0, 0);
   };
 }

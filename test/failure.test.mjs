@@ -10,7 +10,7 @@ function fixture() {
   const hooks = new Map(), notices = [];
   let tool, aborted = 0;
   extension({ on: (name, handler) => hooks.set(name, handler),
-    registerTool: definition => { tool = definition; } });
+    registerMessageRenderer() {}, registerTool: definition => { tool = definition; } });
   sm.appendMessage({ role: 'user', content: 'Hidden by the old view', timestamp: 1 });
   sm.appendCustomEntry(LEGACY_STATE, { view: [] });
   const ctx = { sessionManager: sm, abort: () => { aborted++; }, hasUI: true,

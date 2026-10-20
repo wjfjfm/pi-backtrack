@@ -3,11 +3,12 @@ import { backtrackParameters, validateArguments } from "./schema.js";
 import { backtrackDescription } from "./tool-description.js";
 import { BacktrackEngine } from "./engine.js";
 import { compactEffective } from "./compaction.js";
-import { BacktrackRenderer } from "./render.js";
+import { BacktrackRenderer, renderBaseline } from "./render.js";
 
 export default function registerBacktrack(pi: ExtensionAPI): void {
   const engine = new BacktrackEngine(pi);
   const renderer = new BacktrackRenderer();
+  pi.registerMessageRenderer("backtrack:baseline", renderBaseline);
   const warn = (ctx: ExtensionContext, error: unknown) => {
     const text = `[backtrack] ${String(error)}`;
     if (ctx.hasUI) ctx.ui.notify(text, "warning");
@@ -54,11 +55,9 @@ export default function registerBacktrack(pi: ExtensionAPI): void {
     async execute(callId: string, args: unknown, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
       validateArguments(args);
       if (signal?.aborted) throw new Error("Backtrack cancelled.");
-      engine.register(ctx, callId, args);
+      const content = engine.register(ctx, callId, args);
       // Success means the independent policy is registered, not that sibling tools succeeded.
-      const text = args.keep_after_checkpoint === undefined ? "Backtrack applied."
-        : `Backtrack to checkpoint ${args.checkpoint} succeeded. No separate handoff message was injected because raw context after checkpoint ${args.keep_after_checkpoint} is preserved. Refer to this tool call’s message argument.`;
-      return { content: [{ type: "text" as const, text }], details: { status: "applied" } };
+      return { content, details: { status: "applied" } };
     },
   };
   pi.registerTool(tool);

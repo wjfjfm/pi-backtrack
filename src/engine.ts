@@ -4,7 +4,7 @@ import type { ContextMessage } from "./context.js";
 import { STATE, POLICY, LEGACY_STATE, type BacktrackState, type Checkpoint, type BacktrackDetails, type BacktrackPolicy, type StoredState } from "./contracts.js";
 import { storeState, restoreStates, isStateEntry } from "./state.js";
 import { HISTORY_HEADER, historyBetween, renderHistory } from "./history.js";
-import { applyFolds, bindSources, completeBatchEnd, sourceNodes, type FoldOperation, type SourceNode } from "./projection.js";
+import { applyFolds, backtrackPair, bindSources, completeBatchEnd, sourceNodes, type FoldOperation, type SourceNode } from "./projection.js";
 import { boundaryLocation } from "./render.js";
 import { formatCount } from "./tokens.js";
 import { estimateAfterFold } from "./usage.js";
@@ -34,7 +34,7 @@ function stateRevision(ctx: ExtensionContext): { id: string; state: BacktrackSta
     if (entry.type === "custom" && isStateEntry(entry)) return entry.data as StoredState;
     const policy = policyOf(entry);
     if (policy && completeBatchEnd(branch, policy.assistantId)) return { ...policy.details.state,
-      cursor: policy.keepAfterId === undefined ? entry.id : policy.assistantId, lastTransaction: entry.id };
+      cursor: policy.keepAfterId === undefined ? (policy.retainCall ? policy.anchorId : entry.id) : policy.assistantId, lastTransaction: entry.id };
   };
   for (let i = branch.length - 1; i > base; i--) {
     let saved = stored(branch[i]!);
@@ -76,7 +76,17 @@ export class BacktrackEngine {
     const nodes = (input ? bindSources(entries, input) : sourceNodes(entries)).filter(({ message }) =>
       message.role !== "custom" || message.customType !== "backtrack:baseline"
       || committed.has((message.details as { backtrack: string }).backtrack));
-    return applyFolds(branch, nodes, operations(ctx));
+    // Native compaction still supplies the reset boundary and UI, not an extra user request.
+    const resetSummaries = new Set(branch.filter(entry => entry.type === "compaction"
+      && (entry.details as { retainCall?: boolean } | undefined)?.retainCall).map(entry => entry.id));
+    return applyFolds(branch, nodes.filter(node => !resetSummaries.has(node.id ?? "")
+      && !(node.message.role === "custom" && node.message.customType === "backtrack:boundary")), operations(ctx)).map(node => {
+      // The host adds an optional undefined usage field in memory; JSON omits it on resume.
+      if (node.message.role !== "toolResult" || node.message.toolName !== "backtrack" || node.message.usage !== undefined) return node;
+      const message = { ...node.message };
+      delete message.usage;
+      return { ...node, message };
+    });
   }
   /** The host commits these entries only after the complete tool batch. */
   resetBoundary(ctx: ExtensionContext, event: TurnEndEvent): SessionBoundaryDraft[] | undefined {
@@ -84,13 +94,35 @@ export class BacktrackEngine {
     if (!operation || operation.policy.details.target !== 0 || operation.policy.keepAfterId !== undefined) return;
     const branch = branchOf(ctx);
     if (!completeBatchEnd(branch, operation.policy.assistantId)) return;
+    if (operation.policy.retainCall) {
+      const pair = backtrackPair(branch, operation.policy);
+      const end = completeBatchEnd(branch, operation.policy.assistantId)!;
+      const batch = branch.slice(branch.findIndex(entry => entry.id === operation.policy.assistantId), branch.findIndex(entry => entry.id === end) + 1);
+      const edits = batch.flatMap<SessionBoundaryDraft>(entry => {
+        if (entry.type !== "message") return [];
+        if (entry.id === pair[0]!.id) return [{ type: "context_edit" as const, targetId: entry.id, replacement: { content: pair[0]!.message.content } }];
+        if (entry.id === pair[1]!.id) return [];
+        return [{ type: "context_edit" as const, targetId: entry.id, replacement: null }];
+      });
+      return [...edits,
+        // Pi cannot choose a compaction cut after a lone call/result pair. This empty
+        // native cut point permits overflow recovery; nodes() excludes it from requests.
+        // Publish it before the compaction commit so interrupted resets remain recoverable.
+        { type: "custom_message", customType: "backtrack:boundary", content: "", display: false },
+        { type: "compaction", firstKeptEntryId: operation.policy.assistantId,
+          summary: "Backtracked to checkpoint 0.", details: { backtrack: operation.id, retainCall: true } }, ...event.entries];
+    }
     const staged = branch.find(entry => entry.type === "custom_message" && entry.customType === "backtrack:baseline"
       && (entry.details as { backtrack?: string } | undefined)?.backtrack === operation.id);
     if (!staged && operation.policy.assistantId !== event.messageEntryId) return;
     const entries: SessionBoundaryDraft[] = [];
-    if (!staged) entries.push({ type: "custom_message", customType: "backtrack:baseline", display: false,
+    if (!staged) entries.push({ type: "custom_message", customType: "backtrack:baseline", display: true,
       content: operation.policy.messages.flatMap(message => typeof message.content === "string"
-        ? [{ type: "text" as const, text: message.content }] : message.content), details: { backtrack: operation.id } });
+        ? [{ type: "text" as const, text: message.content }] : message.content), details: {
+        backtrack: operation.id,
+        usage: latestState(ctx)?.usage,
+        handoff: operation.policy.messages.find(message => message.customType === "backtrack:continuation")?.content,
+      } });
     // Publish payload first, commit the new native root last. sync() has just saved
     // an invisible state entry, so this retained range contains no old conversation.
     // If publication was interrupted, retain the existing payload and all later work.
@@ -133,7 +165,10 @@ export class BacktrackEngine {
       const resetId = base?.type === "compaction" ? (base.details as { backtrack?: string } | undefined)?.backtrack : undefined;
       const reset = resetId ? branch.find(entry => entry.id === resetId) : undefined;
       const resetPolicy = reset && policyOf(reset);
-      const firstUser = nodes.findIndex(node => node.message.role === "user");
+      // Extension prompts may precede the first literal user message (e.g. /goal).
+      // Include them in the initial fold interval instead of treating them as metadata.
+      const firstUser = nodes.findIndex(node => node.message.role === "user"
+        || (node.message.role === "custom" && !node.message.customType.startsWith("backtrack:")));
       const prefix = resetPolicy ? nodes.slice(0, nodes.findIndex(node => node.id === base!.id) + 1)
         : nodes.slice(0, firstUser < 0 ? nodes.length : firstUser);
       const boundary = prefix.at(-1)?.id ?? null;
@@ -164,7 +199,7 @@ export class BacktrackEngine {
     let start = cursorIndex + 1;
     const reduction = branch.find(e => e.id === state!.lastTransaction);
     const policy = reduction && policyOf(reduction);
-    if (policy && policy.keepAfterId === undefined && reduction && !state.usage) {
+    if (policy && !policy.retainCall && policy.keepAfterId === undefined && reduction && !state.usage) {
       let boundary = reduction.id;
       while (nodes[start]?.message.role === "custom") boundary = nodes[start++]!.id!;
       this.checkpoint(ctx, state, boundary, completeBatchEnd(branch, policy.assistantId)!);
@@ -210,7 +245,7 @@ export class BacktrackEngine {
     if (!target || (target.boundary !== null && !this.nodes(ctx).some(node => node.id === target.boundary))) throw new Error(`Checkpoint ${checkpoint} is not active on this path.`);
     return { state, target, revision: saved!.id };
   }
-  register(ctx: ExtensionContext, callId: string, args: BacktrackArguments): void {
+  register(ctx: ExtensionContext, callId: string, args: BacktrackArguments): Extract<ContextMessage, { role: "toolResult" }>["content"] {
     const { state, target, revision } = this.validate(ctx, args.checkpoint);
     const previous = { id: revision, state: structuredClone(state) };
     const branch = branchOf(ctx), nodes = this.nodes(ctx);
@@ -238,15 +273,15 @@ export class BacktrackEngine {
     }
     delete state.usage;
     const history = renderHistory(historyBetween(branch, target.historyBoundary, end));
-    const messages: BacktrackPolicy["messages"] = [];
-    if (history.content.length) {
-      history.content = [{ type: "text", text: HISTORY_HEADER }, ...(typeof history.content === "string" ? [{ type: "text" as const, text: history.content }] : history.content)];
-      messages.push(history);
-    }
-    if (args.keep_after_checkpoint === undefined) messages.push({ role: "custom", customType: "backtrack:continuation", content: `[Backtrack message — agent handoff]\n${args.message ?? ""}`, display: true, timestamp: 0 });
+    const content: Extract<ContextMessage, { role: "toolResult" }>["content"] = [
+      { type: "text", text: `Backtracked to checkpoint ${args.checkpoint}.` },
+      ...(history.content.length ? [{ type: "text" as const, text: `\n\n${HISTORY_HEADER}` },
+        ...(typeof history.content === "string" ? [{ type: "text" as const, text: history.content }] : history.content)] : []),
+    ];
     const details: BacktrackDetails = { kind: "backtrack:v2", callId, target: args.checkpoint,
       ...(args.keep_after_checkpoint === undefined ? {} : { keepAfter: args.keep_after_checkpoint }),
       location: boundaryLocation(branch, target.boundary, target.id), before: this.usage(ctx)?.tokens ?? null, state: storeState(state, previous) };
-    this.pi.appendEntry(POLICY, { anchorId: target.boundary, assistantId: assistant.id, ...(keepAfterId ? { keepAfterId } : {}), messages, details } satisfies BacktrackPolicy);
+    this.pi.appendEntry(POLICY, { anchorId: target.boundary, assistantId: assistant.id, ...(keepAfterId ? { keepAfterId } : {}), retainCall: true, messages: [], details } satisfies BacktrackPolicy);
+    return content;
   }
 }

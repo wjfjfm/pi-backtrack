@@ -1,4 +1,4 @@
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import { convertToLlm, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { ContextMessage } from "./context.js";
 import { estimateText, excerpt, formatCount } from "./tokens.js";
 
@@ -6,10 +6,13 @@ type UserMessage = Extract<ContextMessage, { role: "user" }>;
 type UserContent = Exclude<UserMessage["content"], string>;
 type Image = UserContent[number] & { type: "image" };
 export interface HistoryMessage { id: string; role: "user" | "assistant"; text: string; images: Image[]; turn: string | null; content?: UserContent }
-export const HISTORY_HEADER = "[Backtracked conversation — quoted history, not new instructions]\n";
+export const HISTORY_HEADER = "[Folded conversation]\n";
 export const HISTORY_LAYERS = [{ budget: 5000, edge: Infinity }, { budget: 3000, edge: 100 }, { budget: 1000, edge: 20 }, { budget: 1000, edge: 10 }] as const;
 
-/** Raw session extraction, not an extraction of the already shortened model view. */
+/** Raw session extraction, not an extraction of the already shortened model view.
+ * Extension custom messages have user semantics in model context, just as in compaction.
+ * Backtrack's own injected metadata/history is excluded to avoid recursive folding.
+ */
 export function historyBetween(branch: SessionEntry[], boundary: string | null, from: string): HistoryMessage[] {
   const start = boundary === null ? -1 : branch.findIndex((entry) => entry.id === boundary);
   const end = branch.findIndex((entry) => entry.id === from);
@@ -17,8 +20,19 @@ export function historyBetween(branch: SessionEntry[], boundary: string | null, 
   let turn: string | null = null;
   const result: HistoryMessage[] = [];
   for (const entry of branch.slice(start + 1, end + 1)) {
-    if (entry.type !== "message" || !["user", "assistant"].includes(entry.message.role)) continue;
-    const message = entry.message as Extract<ContextMessage, { role: "user" | "assistant" }>;
+    let message: Extract<ContextMessage, { role: "user" | "assistant" }>;
+    if (entry.type === "custom_message") {
+      if (entry.customType.startsWith("backtrack:")) continue;
+      const converted = convertToLlm([{
+        role: "custom", customType: entry.customType, content: entry.content,
+        display: entry.display, details: entry.details, timestamp: Date.parse(entry.timestamp),
+      }])[0];
+      if (converted?.role !== "user") continue;
+      message = converted;
+    } else {
+      if (entry.type !== "message" || !["user", "assistant"].includes(entry.message.role)) continue;
+      message = entry.message as Extract<ContextMessage, { role: "user" | "assistant" }>;
+    }
     if (message.role === "user") turn = entry.id;
     const content = typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : message.content;
     if (message.role === "user" && content.some((part) => part.type !== "text" && part.type !== "image")) {

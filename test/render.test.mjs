@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { stripVTControlCharacters } from 'node:util';
-import { initTheme, ToolExecutionComponent } from '@earendil-works/pi-coding-agent';
+import { initTheme, ToolExecutionComponent, CustomMessageComponent } from '@earendil-works/pi-coding-agent';
 import { visibleWidth } from '@earendil-works/pi-tui';
-import { BacktrackRenderer, boundaryLocation } from '../dist/render.js';
+import { BacktrackRenderer, boundaryLocation, renderBaseline } from '../dist/render.js';
 import { STATE, POLICY } from '../dist/contracts.js';
 
 initTheme('dark', false);
@@ -16,6 +16,44 @@ const transaction = (location = []) => ({ id: 'tx', type: 'custom', customType: 
 const usage = { before: 80900, after: 18200, window: 272000 };
 const metadata = () => ({ type: 'custom', customType: STATE, data: { lastTransaction: 'tx', usage } });
 const manager = entries => ({ sessionManager: { getBranch: () => entries } });
+
+test('native reset shows a compact handoff and token delta, expands full retained text', () => {
+  const handoff = '摘要 '.repeat(100) + '\nFULL_HANDOFF_END';
+  const message = { role: 'custom', customType: 'backtrack:baseline', display: true,
+    content: [{ type: 'text', text: 'RETAINED_DIALOGUE' }, { type: 'image', data: 'secret', mimeType: 'image/png' },
+      { type: 'text', text: handoff }], details: { usage: { ...usage, afterEstimated: true }, handoff }, timestamp: 0 };
+  const before = JSON.stringify(message);
+  const row = new CustomMessageComponent(message, renderBaseline);
+  assert.match(output(row), /80.9K → ~18.2K tokens/);
+  assert.match(output(row), /摘要/);
+  assert.doesNotMatch(output(row), /FULL_HANDOFF_END|RETAINED_DIALOGUE|secret/);
+  row.setExpanded(true);
+  assert.match(output(row), /FULL_HANDOFF_END/);
+  assert.match(output(row), /RETAINED_DIALOGUE/);
+  assert.match(output(row), /\[retained image\]/);
+  for (const width of [12, 40, 100]) assert.ok(row.render(width).every(line => visibleWidth(line) <= width));
+  row.setExpanded(false);
+  assert.doesNotMatch(output(row), /FULL_HANDOFF_END/);
+  assert.equal(JSON.stringify(message), before);
+  const unknown = output(renderBaseline({ ...message, details: {} }, { expanded: false }, theme));
+  assert.match(unknown, /unknown → unknown/);
+  assert.match(unknown, /no handoff provided/);
+});
+
+test('backtrack result folds dialogue by default and expands the full tool result', () => {
+  const renderer = new BacktrackRenderer();
+  renderer.refresh(manager([transaction(), metadata()]));
+  const result = { content: [{ type: 'text', text: 'Backtracked to checkpoint 3.\n\n[Folded conversation]\nuser: ORIGINAL_REQUEST\nassistant: WORK_DONE' }] };
+  const collapsed = output(renderer.renderResult(result, { expanded: false }, theme, context({})));
+  assert.match(collapsed, /80.9K → 18.2K/);
+  assert.match(collapsed, /Backtracked to checkpoint 3/);
+  assert.doesNotMatch(collapsed, /ORIGINAL_REQUEST|WORK_DONE/);
+  assert.match(collapsed, /expand folded conversation/);
+  const expanded = output(renderer.renderResult(result, { expanded: true }, theme, context({}, true)));
+  assert.match(expanded, /\[Folded conversation\]/);
+  assert.match(expanded, /ORIGINAL_REQUEST/);
+  assert.match(expanded, /WORK_DONE/);
+});
 
 test('boundary labels identify user, context start, compaction and the whole tool batch', () => {
   const branch = [message('u', 'user', 'Investigate\ncontext'), message('a', 'assistant', [

@@ -65,6 +65,65 @@ async function fixture(t,respond,mode='parallel',summary,extensions=[],reverseEx
   return session;
  }};
 }
+for (const customOnly of [false, true]) test(`zero reset includes an initial goal (custom-only=${customOnly})`, async t => {
+ const host=await fixture(t,(n,context)=>{
+  if(n===1)return [call('backtrack','initial-goal',{checkpoint:0})];
+  const result=context.messages.find(m=>m.role==='toolResult'&&m.toolCallId==='initial-goal');
+  assert.match(JSON.stringify(result?.content),/user: goal set: INITIAL_GOAL/);
+  return [text('Continue initial goal')];
+ });
+ await host.session.sendCustomMessage({customType:'pi-goal',content:'goal set: INITIAL_GOAL',display:true}, {triggerTurn:customOnly});
+ if (!customOnly) await host.session.prompt('Continue');
+ assert.equal(host.requests.length,2);
+});
+
+for (const checkpoint of [0, 1]) test(`backtrack ${checkpoint} folds extension custom messages as user dialogue`, async t => {
+ const host=await fixture(t,(n,context)=>{
+  if(n===1)return [text('Ready')];
+  if(n===2)return [call('backtrack','fold-goal',{checkpoint,message:'Continue the goal'})];
+  const result=context.messages.find(m=>m.role==='toolResult'&&m.toolCallId==='fold-goal');
+  assert.ok(result);
+  const folded=JSON.stringify(result.content);
+  assert.match(folded,/user: goal set: CUSTOM_GOAL/);
+  assert.match(folded,/user: goal still active: CUSTOM_GOAL/);
+  assert.doesNotMatch(folded,/INTERNAL_CHECKPOINT|STATE_ONLY/);
+  return [text('Continued goal')];
+ });
+ await host.session.prompt('Initial request');
+ await host.session.sendCustomMessage({customType:'pi-goal',content:'goal set: CUSTOM_GOAL',display:true});
+ host.sm.appendCustomEntry('pi-goal-state',{text:'STATE_ONLY'});
+ await host.session.sendCustomMessage({customType:'backtrack:checkpoint',content:'INTERNAL_CHECKPOINT',display:false});
+ await host.session.sendCustomMessage({customType:'pi-goal',content:'goal still active: CUSTOM_GOAL',display:false});
+ await host.session.prompt('Continue');
+ assert.equal(host.requests.length,3);
+});
+
+for (const checkpoint of [0, 1]) test(`backtrack ${checkpoint} retains the real call and puts folded dialogue in its result`, async t => {
+ const host=await fixture(t,(n,context)=>{
+  if(n===1)return [text('EARLIER_REPLY')];
+  if(n===2)return [call('backtrack','move-last',{checkpoint,message:'ORDERED_HANDOFF'})];
+  const visible=JSON.stringify(context.messages);
+  assert.equal(visible.split('LATEST_USER_REQUEST').length-1,1);
+  const caller=context.messages.find(message=>message.role==='assistant'&&message.content.some(part=>part.type==='toolCall'&&part.id==='move-last'));
+  assert.deepEqual(caller.content,[call('backtrack','move-last',{checkpoint,message:'ORDERED_HANDOFF'})]);
+  const result=context.messages.find(message=>message.role==='toolResult'&&message.toolCallId==='move-last');
+  assert.match(JSON.stringify(result.content),/Backtracked to checkpoint/);
+  assert.match(JSON.stringify(result.content),/\[Folded conversation\]/);
+  assert.match(JSON.stringify(result.content),/EARLIER_REPLY/);
+  assert.match(JSON.stringify(result.content),/LATEST_USER_REQUEST/);
+  assert.doesNotMatch(JSON.stringify(result.content),/ORDERED_HANDOFF/);
+  assert.ok(context.messages.indexOf(caller)<context.messages.indexOf(result));
+  assert.doesNotMatch(visible,/Backtrack message — agent handoff|Working context reset/);
+  return [text('Continued task')];
+ });
+ await host.session.prompt('EARLIER_USER_REQUEST');
+ await host.session.prompt('LATEST_USER_REQUEST');
+ assert.equal(host.requests.length,3);
+ const reopened=await host.reopen();
+ await reopened.prompt('Continue');
+ assert.equal(host.requests.length,4);
+});
+
 test('zero reset leaves system/tools unchanged and the new request prefix stable across turns, reload and resume',async t=>{
  let original,baseline,sessionId;
  const host=await fixture(t,(n,context,session)=>{
@@ -85,6 +144,9 @@ test('zero reset leaves system/tools unchanged and the new request prefix stable
  assert.equal(host.requests.length,6);
  const branch=resumed.sessionManager.getBranch();
  assert.equal(branch.filter(entry=>entry.type==='compaction').length,1);
+ assert.ok(!branch.some(entry=>entry.customType==='backtrack:baseline'));
+ const caller=baseline.find(message=>message.role==='assistant'&&message.content.some(part=>part.type==='toolCall'&&part.id==='zero'));
+ assert.deepEqual(caller.content,[call('backtrack','zero',{checkpoint:0,message:'STABLE_HANDOFF'})]);
  const state=latestState({sessionManager:resumed.sessionManager});
  const prefix=JSON.stringify(baseline);
  assert.ok(!prefix.includes(state.epoch));
@@ -101,9 +163,9 @@ test('zero resets create native roots without replaying earlier policies or reta
   assert.deepEqual(operations({sessionManager:sm}),[]);
   const projected=sm.buildSessionProjection().entries;
   assert.ok(projected.every(entry=>branch.indexOf(entry.sourceEntry)>=branch.findIndex(entry=>entry.id===base.firstKeptEntryId)));
-  assert.ok(!projected.some(entry=>entry.sourceEntry.type==='message'&&entry.sourceEntry.message.role==='toolResult'));
+  assert.ok(projected.some(entry=>entry.sourceEntry.type==='message'&&entry.sourceEntry.message.role==='toolResult'&&entry.sourceEntry.message.toolName==='backtrack'));
   const state=latestState({sessionManager:sm});
-  assert.equal(state.base,base.id);assert.equal(state.checkpoints[0].boundary,base.id);
+  assert.equal(state.base,base.id);assert.equal(state.checkpoints[0].boundary,null);
   assert.equal(state.checkpoints[0].historyBoundary,base.firstKeptEntryId);
   if(n===3){assert.match(visible,/ORIGINAL_TASK/);assert.match(visible,/HANDOFF_ONE/);return [call('backtrack','zero-2',{checkpoint:0,message:'HANDOFF_TWO'})];}
   assert.doesNotMatch(visible,/ORIGINAL_TASK|HANDOFF_ONE/);
@@ -143,7 +205,7 @@ test('an interrupted zero publication preserves handoff and resumes the native c
   return [text('Continued')];
  });
  await host.session.prompt('ORIGINAL_REQUEST');
- const branch=host.sm.getBranch(),staged=branch.findIndex(entry=>entry.customType==='backtrack:baseline');
+ const branch=host.sm.getBranch(),staged=branch.findIndex(entry=>entry.type==='context_edit');
  assert.ok(staged>=0);
  const interrupted=join(host.cwd,'interrupted.jsonl');
  await writeFile(interrupted,[host.sm.getHeader(),...branch.slice(0,staged+1)].map(entry=>JSON.stringify(entry)).join('\n')+'\n');
@@ -151,10 +213,10 @@ test('an interrupted zero publication preserves handoff and resumes the native c
  await resumed.prompt('WORK_AFTER_INTERRUPTION');
  const recovered=resumed.sessionManager.getBranch();
  assert.equal(recovered.filter(entry=>entry.type==='compaction').length,1);
- assert.equal(recovered.filter(entry=>entry.customType==='backtrack:baseline').length,1);
+ assert.equal(recovered.filter(entry=>entry.customType==='backtrack:baseline').length,0);
  const native=JSON.stringify(resumed.sessionManager.buildSessionProjection().messages);
  assert.match(native,/DURABLE_HANDOFF/);assert.match(native,/WORK_AFTER_INTERRUPTION/);
- assert.doesNotMatch(native,/"toolCall"/);
+ assert.match(native,/"toolCall"/);
  await resumed.reload();await resumed.prompt('Still here');
  assert.equal(host.requests.length,5);
  assert.equal(resumed.sessionManager.getBranch().filter(entry=>entry.type==='compaction').length,2);
@@ -165,6 +227,11 @@ for(const mode of ['parallel','sequential'])test(`zero reset waits for siblings 
   assert.match(JSON.stringify(context.messages),/SAFE_HANDOFF/);
   assert.match(JSON.stringify(context.messages),/UNRELATED_NOTICE/);
   assert.doesNotMatch(JSON.stringify(context.messages),/SIBLING_FAILURE/);
+  const calls=context.messages.filter(message=>message.role==='assistant').flatMap(message=>message.content.filter(part=>part.type==='toolCall'));
+  assert.deepEqual(calls,[call('backtrack','zero',{checkpoint:0,message:'SAFE_HANDOFF'})]);
+  const results=context.messages.filter(message=>message.role==='toolResult');
+  assert.equal(results.length,1);assert.equal(results[0].toolCallId,'zero');
+  assert.match(JSON.stringify(results[0].content),/Reset after all tools/);
   return [text('Done')];
  },mode,undefined,[],false,pi=>{
   pi.registerTool({name:'notify',label:'notify',description:'notify',executionMode:mode,parameters:{type:'object',properties:{}},
@@ -196,8 +263,18 @@ test('aborting after a registered zero reset does not force continuation or lose
  const resumed=await host.reopen();await resumed.prompt('Continue');assert.equal(host.requests.length,2);
 });
 test('zero retained-tail folds do not reset the native baseline',async t=>{
- const host=await fixture(t,n=>n===1?[call('probe','one')]:n===2?[call('probe','two')]:n===3?
-  [call('backtrack','keep',{checkpoint:0,keep_after_checkpoint:2,message:'TAIL_HANDOFF'})]:[text('Done')]);
+ const host=await fixture(t,(n,context)=>{
+  if(n===1)return [call('probe','one')];
+  if(n===2)return [call('probe','two')];
+  if(n===3)return [call('backtrack','keep',{checkpoint:0,keep_after_checkpoint:2,message:'TAIL_HANDOFF'})];
+  const calls=context.messages.filter(message=>message.role==='assistant').flatMap(message=>message.content.filter(part=>part.type==='toolCall'));
+  assert.deepEqual(calls,[call('probe','two'),call('backtrack','keep',{checkpoint:0,keep_after_checkpoint:2,message:'TAIL_HANDOFF'})]);
+  const result=context.messages.find(message=>message.role==='toolResult'&&message.toolCallId==='keep');
+  assert.match(JSON.stringify(result.content),/\[Folded conversation\]/);
+  assert.match(JSON.stringify(result.content),/Keep the tail/);
+  assert.equal(JSON.stringify(context.messages).split('TAIL_HANDOFF').length-1,1);
+  return [text('Done')];
+ });
  await host.session.prompt('Keep the tail');
  assert.equal(host.requests.length,4);
  assert.equal(host.sm.getBranch().filter(entry=>entry.type==='compaction').length,0);
@@ -447,7 +524,7 @@ for(const mode of ['sequential','parallel'])for(const siblingFailure of [false,t
 test('public host continues after folding and preserves its usage snapshot across reload',async t=>{
  const host=await fixture(t,(n,ctx)=>{
   if(n===1)return [text('Answer text.'),call('backtrack','fold',{checkpoint:0,message:'DONE'})];
-  assert.ok(!ctx.messages.some(message=>message.role==='assistant'&&message.content.some(part=>part.type==='toolCall'&&part.name==='backtrack')));
+  assert.ok(ctx.messages.some(message=>message.role==='assistant'&&message.content.some(part=>part.type==='toolCall'&&part.name==='backtrack')));
   assert.ok(JSON.stringify(ctx.messages).includes('DONE'));return [text('Continue.')];
  });
  await host.session.prompt('Question');assert.equal(host.requests.length,2);

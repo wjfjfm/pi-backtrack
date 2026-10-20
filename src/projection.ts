@@ -6,6 +6,8 @@ export interface FoldPolicy {
   anchorId: string | null;
   assistantId: string;
   keepAfterId?: string;
+  /** Preserve the actual backtrack call/result instead of injecting custom user messages. */
+  retainCall?: boolean;
   messages: Extract<ContextMessage, { role: "custom" }>[];
 }
 export interface FoldOperation { id: string; policy: FoldPolicy }
@@ -45,24 +47,48 @@ export function completeBatchEnd(branch: readonly SessionEntry[], assistantId: s
   return results.at(-1)?.id;
 }
 
+/** Keep the real call unchanged, but not sibling calls or discarded reasoning. */
+export function backtrackPair(branch: readonly SessionEntry[], policy: FoldPolicy): [
+  { id: string; message: Extract<ContextMessage, { role: "assistant" }> },
+  { id: string; message: Extract<ContextMessage, { role: "toolResult" }> },
+] {
+  const caller = branch.find(entry => entry.id === policy.assistantId);
+  if (caller?.type !== "message" || caller.message.role !== "assistant") throw new Error("Missing backtrack caller.");
+  const call = caller.message.content.find(part => part.type === "toolCall" && part.name === "backtrack");
+  if (call?.type !== "toolCall") throw new Error("Missing backtrack call.");
+  const end = completeBatchEnd(branch, policy.assistantId);
+  const batch = branch.slice(branch.indexOf(caller) + 1, branch.findIndex(entry => entry.id === end) + 1);
+  const result = batch.find(entry => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolCallId === call.id);
+  if (result?.type !== "message" || result.message.role !== "toolResult") throw new Error("Missing backtrack result.");
+  return [{ id: caller.id, message: { ...caller.message, content: [call] } }, { id: result.id, message: result.message }];
+}
+
 /** One reducer for ordinary requests and compaction preparation. */
 export function applyFolds(
   branch: readonly SessionEntry[], input: readonly SourceNode[], operations: readonly FoldOperation[],
 ): SourceNode[] {
   let nodes = [...input];
+  const positions = new Map(branch.map((entry, index) => [entry.id, index]));
   for (const { id, policy } of operations) {
     const end = completeBatchEnd(branch, policy.assistantId);
     if (!end) continue;
     const left = policy.anchorId === null ? -1 : nodes.findLastIndex(node => node.id === policy.anchorId);
     if (policy.anchorId !== null && left < 0) throw new Error("Backtrack anchor is not in effective context.");
-    const right = nodes.findLastIndex(node => node.id === (policy.keepAfterId ?? end));
-    const finish = nodes.findLastIndex(node => node.id === end);
+    const endIndex = positions.get(end)!;
+    // Interrupted native publication may already have omitted sibling results.
+    const finish = policy.retainCall ? nodes.findLastIndex(node => {
+      const position = node.id === null ? undefined : positions.get(node.id);
+      return position !== undefined && position >= positions.get(policy.assistantId)! && position <= endIndex;
+    }) : nodes.findLastIndex(node => node.id === end);
+    const right = policy.keepAfterId === undefined ? finish : nodes.findLastIndex(node => node.id === policy.keepAfterId);
     if (right <= left || finish < right || (policy.keepAfterId !== undefined && finish === right)) {
       throw new Error("Backtrack interval is not in effective context.");
     }
     // Never delete unrelated request-local additions whose provenance we do not own.
     const foreign = nodes.slice(left + 1, right + 1).filter(node => node.id === null);
-    nodes = [...nodes.slice(0, left + 1), ...policy.messages.map(message => ({ id, message })), ...foreign, ...nodes.slice(right + 1)];
+    const replacement = policy.retainCall && policy.keepAfterId === undefined ? backtrackPair(branch, policy)
+      : policy.messages.map(message => ({ id, message }));
+    nodes = [...nodes.slice(0, left + 1), ...replacement, ...foreign, ...nodes.slice(right + 1)];
   }
   return nodes;
 }
