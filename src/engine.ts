@@ -258,6 +258,13 @@ export class BacktrackEngine {
     const calls = assistant.message.content.filter(part => part.type === "toolCall").filter(part => part.name === "backtrack");
     if (calls.length !== 1 || calls[0]!.id !== callId) throw new Error("Only one backtrack is allowed per tool batch.");
     if (operations(ctx).some(op => op.policy.assistantId === assistant.id)) throw new Error("Backtrack is already registered for this tool batch.");
+    if (target.id !== 0 && target === state.checkpoints.at(-1)) {
+      const boundaryIndex = target.boundary === null ? -1 : nodes.findLastIndex(n => n.id === target.boundary);
+      const callerIndex = nodes.findLastIndex(n => n.id === assistant.id);
+      const hasContent = nodes.slice(boundaryIndex + 1, callerIndex).some(({ message }) =>
+        message.role !== "custom" || !message.customType.startsWith("backtrack:"));
+      if (!hasContent) throw new Error("Nothing to fold after the latest checkpoint. Continue the user task; do not backtrack to the newest marker. Choose an earlier checkpoint only when there is meaningful context to fold.");
+    }
     let keepAfterId: string | undefined, end = assistant.id;
     if (args.keep_after_checkpoint !== undefined) {
       const tail = this.validate(ctx, args.keep_after_checkpoint).target;

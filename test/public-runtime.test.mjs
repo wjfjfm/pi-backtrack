@@ -65,6 +65,28 @@ async function fixture(t,respond,mode='parallel',summary,extensions=[],reverseEx
   return session;
  }};
 }
+for (const afterReset of [false, true]) test(`latest empty checkpoint is rejected without a policy (after reset=${afterReset})`, async t => {
+ let rejectedId;
+ const host=await fixture(t,(n,context)=>{
+  if(afterReset&&n===1)return [call('backtrack','reset-before-noop',{checkpoint:0,message:'Continue real work'})];
+  if(n===(afterReset?2:1)){
+   const markers=[...JSON.stringify(context.messages).matchAll(/\[checkpoint (\d+) context/g)];
+   rejectedId=Number(markers.at(-1)[1]);
+   assert.ok(rejectedId>0);
+   return [call('backtrack','reject-noop',{checkpoint:rejectedId})];
+  }
+  const result=context.messages.find(m=>m.role==='toolResult'&&m.toolCallId==='reject-noop');
+  assert.equal(result?.isError,true);
+  assert.match(JSON.stringify(result.content),/Nothing to fold after the latest checkpoint/);
+  return [text('Continue the actual task instead of backtracking')];
+ });
+ await host.session.prompt('Perform actual work');
+ assert.equal(host.requests.length,afterReset?3:2);
+ const policies=host.sm.getBranch().filter(e=>e.type==='custom'&&e.customType===POLICY);
+ assert.equal(policies.length,afterReset?1:0);
+ assert.ok(policies.every(e=>e.data.details.callId!=='reject-noop'));
+});
+
 for (const customOnly of [false, true]) test(`zero reset includes an initial goal (custom-only=${customOnly})`, async t => {
  const host=await fixture(t,(n,context)=>{
   if(n===1)return [call('backtrack','initial-goal',{checkpoint:0})];
