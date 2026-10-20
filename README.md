@@ -24,7 +24,7 @@ Agent-controlled context backtracking for recursive thinking and exploration.
 Injects a checkpoint and context usage after each user input and complete tool-result batch:
 
 ```text
-backtrack-checkpoint 3 context 48K/200K 24%
+[checkpoint 3 context 48K/200K 24%]
 ```
 
 The agent monitors context usage and chooses a checkpoint to return to based on the current task. It preserves the preceding effective context intact for KV cache reuse, carrying knowledge gained during exploration into the work ahead.
@@ -36,7 +36,7 @@ backtrack({
 })
 ```
 
-`checkpoint` selects the return point. `message` records work done, material examined, findings, failed attempts and lessons, and next steps.
+`checkpoint` selects the return point. `message` records work done, material examined, findings, failed attempts and lessons, and next steps. Backtracking to the latest nonzero checkpoint is rejected when there is no new content to fold.
 
 ## Install
 

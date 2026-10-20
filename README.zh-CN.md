@@ -24,7 +24,7 @@
 在 user input 和完整 tool result 批次后注入 checkpoint 与上下文用量：
 
 ```text
-backtrack-checkpoint 3 context 48K/200K 24%
+[checkpoint 3 context 48K/200K 24%]
 ```
 
 Agent 感知上下文容量，根据当前任务自主回退到某个 checkpoint，完整保留此前的有效上下文以便复用 KV Cache，携带探索中积累的知识继续工作。
@@ -36,7 +36,7 @@ backtrack({
 })
 ```
 
-`checkpoint` 指定返回位点。`message` 记录已做工作、查阅内容、结论、试错教训和下一步。
+`checkpoint` 指定返回位点。`message` 记录已做工作、查阅内容、结论、试错教训和下一步。最新的非零 checkpoint 后没有新增可折叠内容时，拒绝回退。
 
 ## 安装
 
