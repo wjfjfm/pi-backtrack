@@ -645,7 +645,8 @@ for(const summarize of [false,true])test(`tree checkpoints follow the selected b
   if(phase==='alternate'){
    restoredTarget=current.checkpoints.find(point=>point.boundary===targetId);
    assert.ok(restoredTarget,'the selected complete tool batch gets a checkpoint');
-   assert.match(visible,new RegExp(`backtrack-checkpoint ${restoredTarget.id} context`));
+   assert.ok(visible.includes(`[checkpoint ${restoredTarget.id} context`));
+   assert.doesNotMatch(visible,/backtrack-checkpoint/);
    assert.ok(!current.checkpoints.some(point=>point.boundary===originalPolicyId),'the abandoned fold boundary is not active');
    assert.match(visible,/SECRET_TOOL_BODY/);
    assert.doesNotMatch(visible,/ORIGINAL_HANDOFF/);

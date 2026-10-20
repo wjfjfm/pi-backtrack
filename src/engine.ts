@@ -149,7 +149,7 @@ export class BacktrackEngine {
     const window = nativeUsage?.contextWindow;
     const usage = tokens === null || !window ? "unknown" : `${formatCount(tokens)}/${formatCount(window)} ${Math.round(nativeUsage!.percent ?? tokens / window * 100)}%`;
     state.checkpoints.push({ id, boundary, historyBoundary, tokens, marker: {
-      role: "custom", customType: "backtrack:checkpoint", content: `backtrack-checkpoint ${id} context ${usage}`, display: false, timestamp: 0,
+      role: "custom", customType: "backtrack:checkpoint", content: `[checkpoint ${id} context ${usage}]`, display: false, timestamp: 0,
       details: { epoch: state.epoch, id, boundary, accuracy: tokens === null ? "unknown" : "estimated" },
     } });
   }
@@ -233,7 +233,11 @@ export class BacktrackEngine {
     for (const checkpoint of state.checkpoints) {
       const index = checkpoint.boundary === null ? (first < 0 ? nodes.length : first) - 1 : anchors.get(checkpoint.boundary);
       if (index === undefined) continue;
-      after.set(index, [...after.get(index) ?? [], checkpoint.marker]);
+      const marker = checkpoint.marker;
+      // Normalize persisted legacy markers without rewriting session history.
+      const content = typeof marker.content === "string" && marker.content.startsWith("backtrack-checkpoint ")
+        ? `[checkpoint ${marker.content.slice("backtrack-checkpoint ".length)}]` : marker.content;
+      after.set(index, [...after.get(index) ?? [], { ...marker, content }]);
     }
     return structuredClone([...(after.get(-1) ?? []), ...nodes.flatMap((node, index) => [node.message, ...after.get(index) ?? []])]);
   }
